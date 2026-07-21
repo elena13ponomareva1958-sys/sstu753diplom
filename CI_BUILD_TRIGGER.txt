@@ -1,3 +1,4 @@
 Trigger Android APK build and expose pull-request workflow logs.
 Retry after archive diagnostics update.
 Capture restoration diagnostics artifact.
+Retry with repaired archive bytes.
