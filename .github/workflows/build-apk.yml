@@ -1,0 +1,90 @@
+name: Build defect detector APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-apk.yml'
+      - 'ci_tgz/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore Android project
+        shell: bash
+        run: |
+          mkdir -p project
+          cat ci_tgz/tgz_*.txt | base64 -d > project.tar.gz
+          tar -xzf project.tar.gz -C project
+          rm -f project.tar.gz
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'platform-tools'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Create build-only placeholder assets
+        shell: bash
+        run: |
+          mkdir -p project/app/src/main/assets/models project/app/src/main/res/raw
+          printf 'PLACEHOLDER_MODEL_320' > project/app/src/main/assets/models/best_320.tflite
+          printf 'PLACEHOLDER_MODEL_416' > project/app/src/main/assets/models/best_416.tflite
+          printf 'PLACEHOLDER_MODEL_640' > project/app/src/main/assets/models/best_640.tflite
+          python3 - <<'PY'
+          import math, struct, wave
+          from pathlib import Path
+          root = Path('project/app/src/main/res/raw')
+          root.mkdir(parents=True, exist_ok=True)
+          def tone(name, pattern):
+              rate = 22050
+              samples=[]
+              for freq,dur,amp in pattern:
+                  n=int(rate*dur)
+                  for i in range(n):
+                      v=0 if freq==0 else int(32767*amp*math.sin(2*math.pi*freq*i/rate))
+                      samples.append(v)
+              with wave.open(str(root/name),'wb') as w:
+                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+                  w.writeframes(b''.join(struct.pack('<h',x) for x in samples))
+          tone('short_beep.wav', [(880,.14,.45)])
+          tone('double_alarm.wav', [(1050,.13,.55),(0,.08,0),(1050,.13,.55)])
+          tone('sharp_alarm.wav', [(1350,.18,.65),(0,.06,0),(1350,.18,.65)])
+          PY
+
+      - name: Build debug APK
+        working-directory: project
+        shell: bash
+        run: gradle --no-daemon clean assembleDebug --stacktrace
+
+      - name: Collect signing tools
+        shell: bash
+        run: |
+          mkdir -p signing-tools
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+          chmod +x signing-tools/zipalign
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: defect-detector-shell-and-signing-tools
+          if-no-files-found: error
+          path: |
+            project/app/build/outputs/apk/debug/app-debug.apk
+            signing-tools/apksigner.jar
+            signing-tools/zipalign
