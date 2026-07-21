@@ -3,3 +3,4 @@ Retry after archive diagnostics update.
 Capture restoration diagnostics artifact.
 Retry with repaired archive bytes.
 Capture full Gradle build log.
+Retry with LiteRT 1.4.2 compatibility fix.
