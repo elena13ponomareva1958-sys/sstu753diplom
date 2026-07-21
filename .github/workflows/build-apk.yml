@@ -89,7 +89,17 @@ jobs:
       - name: Build debug APK
         working-directory: project
         shell: bash
-        run: gradle --no-daemon clean assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          gradle --no-daemon clean assembleDebug --stacktrace 2>&1 | tee ../gradle-build.log
+
+      - name: Upload Gradle build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          if-no-files-found: error
+          path: gradle-build.log
 
       - name: Collect signing tools
         shell: bash
