@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_tgz/**'
+  pull_request:
+    branches: [ main ]
 
 jobs:
   build:
