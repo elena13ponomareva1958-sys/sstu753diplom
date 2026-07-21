@@ -1,11 +1,13 @@
-name: Build defect detector APK
+name: Build Defectoscope AI APK
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - android-defectoscope-ai-1.1.0
     paths:
       - '.github/workflows/build-apk.yml'
-      - 'ci_tgz/**'
+      - 'ci_overlay/**'
   pull_request:
     branches: [ main ]
 
@@ -41,10 +43,17 @@ jobs:
           test -f project/settings.gradle.kts
           rm -f project.tar.gz project.b64
 
-      - name: Apply dependency compatibility fix
+      - name: Apply source overlay
         shell: bash
         run: |
-          sed -i 's/com.google.ai.edge.litert:litert:2.1.6/com.google.ai.edge.litert:litert:1.4.2/g' project/app/build.gradle.kts
+          set -euxo pipefail
+          cat ci_overlay/overlay_*.txt > overlay.b64
+          test "$(sha256sum overlay.b64 | awk '{print $1}')" = "df4ad818237af6bd85ca53fc923c602d783d36978c4561ee7b63e89511d25bf5"
+          base64 --decode overlay.b64 > overlay.tar.gz
+          test "$(sha256sum overlay.tar.gz | awk '{print $1}')" = "74634457ce804113713575b6912141de48016b9c1b0e96dd880b4930b1103aaf"
+          gzip -t overlay.tar.gz
+          tar -xzf overlay.tar.gz -C project
+          rm -f overlay.tar.gz overlay.b64
           grep -n 'litert' project/app/build.gradle.kts
 
       - uses: actions/setup-java@v4
@@ -107,23 +116,28 @@ jobs:
           if-no-files-found: error
           path: gradle-build.log
 
-      - name: Collect signing tools
+      - name: Collect APK inspection tools
+        if: success()
         shell: bash
         run: |
           mkdir -p signing-tools
           cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
           cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt2" signing-tools/
           LIBCPP="$(find "$ANDROID_HOME/build-tools/35.0.0" -name 'libc++.so*' | head -n 1)"
           test -n "$LIBCPP"
           cp "$LIBCPP" signing-tools/libc++.so
-          chmod +x signing-tools/zipalign
+          chmod +x signing-tools/zipalign signing-tools/aapt2
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK shell and tools
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: defect-detector-shell-and-signing-tools
+          name: defectoscope-ai-shell-and-tools
           if-no-files-found: error
           path: |
             project/app/build/outputs/apk/debug/app-debug.apk
             signing-tools/apksigner.jar
             signing-tools/zipalign
+            signing-tools/aapt2
             signing-tools/libc++.so
