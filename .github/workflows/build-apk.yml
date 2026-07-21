@@ -15,14 +15,24 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          show-progress: false
 
       - name: Restore Android project
         shell: bash
         run: |
+          set -euxo pipefail
+          ls -l ci_tgz
+          wc -c ci_tgz/tgz_*.txt
           mkdir -p project
-          cat ci_tgz/tgz_*.txt | base64 -d > project.tar.gz
+          cat ci_tgz/tgz_*.txt > project.b64
+          wc -c project.b64
+          base64 --decode project.b64 > project.tar.gz
+          wc -c project.tar.gz
+          gzip -t project.tar.gz
           tar -xzf project.tar.gz -C project
-          rm -f project.tar.gz
+          test -f project/settings.gradle.kts
+          rm -f project.tar.gz project.b64
 
       - uses: actions/setup-java@v4
         with:
