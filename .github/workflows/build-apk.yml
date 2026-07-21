@@ -41,6 +41,12 @@ jobs:
           test -f project/settings.gradle.kts
           rm -f project.tar.gz project.b64
 
+      - name: Apply dependency compatibility fix
+        shell: bash
+        run: |
+          sed -i 's/com.google.ai.edge.litert:litert:2.1.6/com.google.ai.edge.litert:litert:1.4.2/g' project/app/build.gradle.kts
+          grep -n 'litert' project/app/build.gradle.kts
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
