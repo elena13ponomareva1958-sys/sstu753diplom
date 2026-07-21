@@ -19,49 +19,27 @@ jobs:
           show-progress: false
 
       - name: Restore Android project
-        id: restore
-        continue-on-error: true
         shell: bash
         run: |
-          set +e
-          exec > >(tee restore.log) 2>&1
-          set -x
-          ls -l ci_tgz
-          wc -c ci_tgz/tgz_*.txt
+          set -euxo pipefail
           mkdir -p project
           cat ci_tgz/tgz_*.txt > project.b64
-          wc -c project.b64
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('project.b64')
+          chars = list(path.read_text())
+          repairs = {13952: 'i', 16176: 'i', 16599: 'i', 21231: 'U'}
+          for index, value in repairs.items():
+              chars[index] = value
+          path.write_text(''.join(chars))
+          PY
+          test "$(sha256sum project.b64 | awk '{print $1}')" = "9993d22053c36b8d98809e1b89766bccbc9d309a88842cbf82813cbafd77b575"
           base64 --decode project.b64 > project.tar.gz
-          RC_BASE64=$?
-          wc -c project.tar.gz
-          gzip -tv project.tar.gz
-          RC_GZIP=$?
-          tar -xzvf project.tar.gz -C project
-          RC_TAR=$?
-          find project -maxdepth 2 -type f -print | sort
+          test "$(sha256sum project.tar.gz | awk '{print $1}')" = "ddd425eecef50e043344dc8bb4d1ade3b5607cf653875237db16a61423534a37"
+          gzip -t project.tar.gz
+          tar -xzf project.tar.gz -C project
           test -f project/settings.gradle.kts
-          RC_PROJECT=$?
-          echo "RC_BASE64=$RC_BASE64 RC_GZIP=$RC_GZIP RC_TAR=$RC_TAR RC_PROJECT=$RC_PROJECT"
-          if [ "$RC_BASE64" -ne 0 ] || [ "$RC_GZIP" -ne 0 ] || [ "$RC_TAR" -ne 0 ] || [ "$RC_PROJECT" -ne 0 ]; then
-            exit 1
-          fi
           rm -f project.tar.gz project.b64
-
-      - name: Upload restoration diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: restoration-diagnostics
-          path: |
-            restore.log
-            project.b64
-            project.tar.gz
-          if-no-files-found: warn
-
-      - name: Stop after restoration failure
-        if: steps.restore.outcome == 'failure'
-        shell: bash
-        run: exit 1
 
       - uses: actions/setup-java@v4
         with:
