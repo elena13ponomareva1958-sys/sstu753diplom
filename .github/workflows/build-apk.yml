@@ -7,6 +7,7 @@ on:
       - '.github/workflows/build-apk.yml'
       - 'ci_tgz/**'
       - 'ci_overlay/**'
+      - 'ci_core/**'
   pull_request:
     branches: [ main ]
 
@@ -52,6 +53,17 @@ jobs:
           test "$(sha256sum build_1_5_0_overlay.tar.gz | awk '{print $1}')" = "93a825635b915000c3d4194923ba5b445893e68713354285f913cce78b7c0f80"
           gzip -t build_1_5_0_overlay.tar.gz
           tar -xzf build_1_5_0_overlay.tar.gz -C project
+
+      - name: Apply current core sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat ci_core/core_*.txt > source_core.tar.gz.b64
+          test "$(sha256sum source_core.tar.gz.b64 | awk '{print $1}')" = "9fa1b9bc3ab6349183bdf2aa8bd4acf730b1a6bdceab91da3c520efdb682e177"
+          base64 --decode source_core.tar.gz.b64 > source_core.tar.gz
+          test "$(sha256sum source_core.tar.gz | awk '{print $1}')" = "0535ce31735abfee03049722862ed874eb6cce44850b5a514ec9e832e418bc3b"
+          gzip -t source_core.tar.gz
+          tar -xzf source_core.tar.gz -C project
           grep -nE 'versionCode|versionName' project/app/build.gradle.kts
           test "$(grep -c 'versionCode = 6' project/app/build.gradle.kts)" -eq 1
           test "$(grep -c 'versionName = \"1.5.0\"' project/app/build.gradle.kts)" -eq 1
