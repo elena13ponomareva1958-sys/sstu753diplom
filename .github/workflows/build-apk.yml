@@ -6,7 +6,7 @@ on:
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_tgz/**'
-      - 'ci_patch/**'
+      - 'ci_overlay/**'
   pull_request:
     branches: [ main ]
 
@@ -42,13 +42,16 @@ jobs:
           test -f project/settings.gradle.kts
           rm -f project.tar.gz project.b64
 
-      - name: Apply 1.5.0 source patch
+      - name: Apply 1.5.0 source overlay
         shell: bash
         run: |
           set -euxo pipefail
-          base64 --decode ci_patch/build_1_5_0.patch.gz.b64 | gunzip > build_1_5_0.patch
-          test "$(sha256sum build_1_5_0.patch | awk '{print $1}')" = "d0f52117538266c93e3c10dea2a59295c75f4b26a92a04dfc7d4d8df1e126d66"
-          patch -d project -p1 < build_1_5_0.patch
+          cat ci_overlay/overlay_*.txt > build_1_5_0_overlay.tar.gz.b64
+          test "$(sha256sum build_1_5_0_overlay.tar.gz.b64 | awk '{print $1}')" = "4114972ca49cbd2f09126ac90aa99ee398d3d409b936dbd67965367b35f496b2"
+          base64 --decode build_1_5_0_overlay.tar.gz.b64 > build_1_5_0_overlay.tar.gz
+          test "$(sha256sum build_1_5_0_overlay.tar.gz | awk '{print $1}')" = "93a825635b915000c3d4194923ba5b445893e68713354285f913cce78b7c0f80"
+          gzip -t build_1_5_0_overlay.tar.gz
+          tar -xzf build_1_5_0_overlay.tar.gz -C project
           grep -nE 'versionCode|versionName' project/app/build.gradle.kts
           test "$(grep -c 'versionCode = 6' project/app/build.gradle.kts)" -eq 1
           test "$(grep -c 'versionName = \"1.5.0\"' project/app/build.gradle.kts)" -eq 1
@@ -119,16 +122,18 @@ jobs:
           if-no-files-found: error
           path: gradle-build.log
 
-      - name: Collect signing tools
+      - name: Collect verification tools
         shell: bash
         run: |
           mkdir -p signing-tools
           cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
           cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt2" signing-tools/
           LIBCPP="$(find "$ANDROID_HOME/build-tools/35.0.0" -name 'libc++.so*' | head -n 1)"
           test -n "$LIBCPP"
           cp "$LIBCPP" signing-tools/libc++.so
-          chmod +x signing-tools/zipalign
+          chmod +x signing-tools/zipalign signing-tools/aapt signing-tools/aapt2
 
       - uses: actions/upload-artifact@v4
         with:
@@ -138,4 +143,6 @@ jobs:
             project/app/build/outputs/apk/debug/app-debug.apk
             signing-tools/apksigner.jar
             signing-tools/zipalign
+            signing-tools/aapt
+            signing-tools/aapt2
             signing-tools/libc++.so
