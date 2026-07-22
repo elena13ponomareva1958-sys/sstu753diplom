@@ -1,0 +1,293 @@
++            } else {
++                "Проверка завершена: найдено объектов — ${result.detections.size}"
++            },
++        )
++    }
++
++    private suspend fun analyzeVideo(uri: Uri, name: String, settings: AppSettings) {
++        withContext(Dispatchers.Default) {
++            val retriever = MediaMetadataRetriever()
++            var bestOriginal: Bitmap? = null
++            var bestPreview: Bitmap? = null
++            var bestDetections: List<Detection> = emptyList()
++            var bestConfidence = 0f
++            var defectFrames = 0
++            var totalInferenceMs = 0L
++            var firstPreview: Bitmap? = null
++
++            try {
++                retriever.setDataSource(container.appContext, uri)
++                val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
++                    ?.toLongOrNull()
++                    ?.coerceAtLeast(1L)
++                    ?: error("Не удалось определить длительность видео")
++
++                val estimatedFrames = ceil(durationMs / VIDEO_SAMPLE_INTERVAL_MS.toDouble())
++                    .toInt()
++                    .coerceAtLeast(1)
++                val totalFrames = min(estimatedFrames, MAX_VIDEO_SAMPLES)
++                val stepMs = max(VIDEO_SAMPLE_INTERVAL_MS, durationMs / totalFrames)
++
++                _state.value = _state.value.copy(
++                    totalFrames = totalFrames,
++                    message = "Проверка видео: 0 из $totalFrames кадров",
++                )
++
++                LiteRtYoloDetector(container.appContext).use { detector ->
++                    for (index in 0 until totalFrames) {
++                        ensureActive()
++                        val timeMs = min(durationMs - 1L, index * stepMs)
++                        val raw = extractVideoFrame(retriever, timeMs)
++                            ?: continue
++                        val frame = scaleDown(raw, MAX_VIDEO_FRAME_SIDE)
++                        if (frame !== raw) raw.recycle()
++
++                        try {
++                            if (firstPreview == null) {
++                                firstPreview = frame.copy(Bitmap.Config.ARGB_8888, false)
++                            }
++                            val inference = detector.detect(
++                                source = frame,
++                                settings = settings,
++                                confidenceThreshold = settings.confidenceThreshold,
++                                iouThreshold = settings.iouThreshold,
++                            )
++                            totalInferenceMs += inference.inferenceMs
++                            val confidence = inference.detections.maxOfOrNull { it.confidence } ?: 0f
++                            if (inference.detections.isNotEmpty()) defectFrames++
++
++                            if (confidence > bestConfidence || (bestPreview == null && inference.detections.isNotEmpty())) {
++                                bestOriginal?.recycle()
++                                bestPreview?.recycle()
++                                bestOriginal = frame.copy(Bitmap.Config.ARGB_8888, false)
++                                bestPreview = frame.copy(Bitmap.Config.ARGB_8888, true)?.also {
++                                    DetectionFileStore.drawDetections(it, inference.detections)
++                                }
++                                bestDetections = inference.detections
++                                bestConfidence = confidence
++                            }
++                        } finally {
++                            frame.recycle()
++                        }
++
++                        val processed = index + 1
++                        _state.value = _state.value.copy(
++                            busy = true,
++                            progress = processed.toFloat() / totalFrames,
++                            processedFrames = processed,
++                            totalFrames = totalFrames,
++                            defectFrames = defectFrames,
++                            maxConfidence = bestConfidence,
++                            message = "Проверка видео: $processed из $totalFrames кадров",
++                        )
++                    }
++                }
++
++                val finalPreview = bestPreview ?: firstPreview
++                if (finalPreview == null) error("Не удалось получить кадры из видео")
++                if (bestPreview != null && firstPreview !== bestPreview) firstPreview?.recycle()
++
++                if (settings.autoSaveDetections && bestOriginal != null && bestDetections.isNotEmpty()) {
++                    saveToHistory(bestOriginal!!, bestDetections)
++                }
++                bestOriginal?.recycle()
++
++                replacePreview(finalPreview)
++                _state.value = OfflineAnalysisUiState(
++                    sourceName = name,
++                    sourceType = "Видео",
++                    preview = finalPreview,
++                    progress = 1f,
++                    processedFrames = totalFrames,
++                    totalFrames = totalFrames,
++                    defectFrames = defectFrames,
++                    detections = bestDetections,
++                    maxConfidence = bestConfidence,
++                    inferenceMs = if (totalFrames > 0) totalInferenceMs / totalFrames else 0L,
++                    message = if (bestDetections.isEmpty()) {
++                        "Проверка завершена: неисправностей не обнаружено"
++                    } else {
++                        "Проверка завершена: дефект найден в $defectFrames кадрах"
++                    },
++                )
++            } finally {
++                runCatching { retriever.release() }
++                bestOriginal?.recycle()
++                if (_state.value.preview !== bestPreview) bestPreview?.recycle()
++                if (_state.value.preview !== firstPreview) firstPreview?.recycle()
++            }
++        }
++    }
++
++    private fun extractVideoFrame(retriever: MediaMetadataRetriever, timeMs: Long): Bitmap? {
++        val timeUs = timeMs * 1_000L
++        return retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
++    }
++
++    private fun decodeImage(uri: Uri): Bitmap {
++        val resolver = container.appContext.contentResolver
++        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
++            val source = ImageDecoder.createSource(resolver, uri)
++            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
++                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
++                val maxSide = max(info.size.width, info.size.height)
++                if (maxSide > MAX_IMAGE_SIDE) {
++                    val scale = MAX_IMAGE_SIDE.toFloat() / maxSide
++                    decoder.setTargetSize(
++                        (info.size.width * scale).toInt().coerceAtLeast(1),
++                        (info.size.height * scale).toInt().coerceAtLeast(1),
++                    )
++                }
++            }
++        } else {
++            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++            resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
++            var sample = 1
++            while (max(bounds.outWidth, bounds.outHeight) / sample > MAX_IMAGE_SIDE) sample *= 2
++            val options = BitmapFactory.Options().apply {
++                inSampleSize = sample
++                inPreferredConfig = Bitmap.Config.ARGB_8888
++            }
++            resolver.openInputStream(uri)?.use { stream ->
++                BitmapFactory.decodeStream(stream, null, options)
++            } ?: error("Не удалось прочитать изображение")
++        }
++    }
++
++    private fun scaleDown(bitmap: Bitmap, maxSide: Int): Bitmap {
++        val largest = max(bitmap.width, bitmap.height)
++        if (largest <= maxSide) return bitmap
++        val ratio = maxSide.toFloat() / largest
++        return Bitmap.createScaledBitmap(
++            bitmap,
++            (bitmap.width * ratio).toInt().coerceAtLeast(1),
++            (bitmap.height * ratio).toInt().coerceAtLeast(1),
++            true,
++        )
++    }
++
++    private suspend fun saveToHistory(bitmap: Bitmap, detections: List<Detection>) {
++        val topClass = detections.maxByOrNull { it.defectClass.severity }?.defectClass ?: return
++        val maxConfidence = detections.maxOfOrNull { it.confidence } ?: 0f
++        val copy = bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return
++        try {
++            val images = container.fileStore.save(copy, detections)
++            container.historyRepository.insert(
++                DetectionEntity(
++                    createdAt = System.currentTimeMillis(),
++                    classId = topClass.id,
++                    modelClassName = topClass.modelName,
++                    russianName = topClass.russianName,
++                    maxConfidence = maxConfidence,
++                    objectCount = detections.size,
++                    originalImagePath = images.originalPath,
++                    annotatedImagePath = images.annotatedPath,
++                ),
++            )
++        } finally {
++            copy.recycle()
++        }
++    }
++
++    private fun queryDisplayName(uri: Uri): String {
++        val resolver = container.appContext.contentResolver
++        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
++            if (cursor.moveToFirst()) {
++                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
++                if (index >= 0) return cursor.getString(index)
++            }
++        }
++        return uri.lastPathSegment ?: "Выбранный файл"
++    }
++
++    private fun replacePreview(bitmap: Bitmap?) {
++        val old = _state.value.preview
++        if (old !== bitmap) old?.recycle()
++    }
++
++    override fun onCleared() {
++        analysisJob?.cancel()
++        replacePreview(null)
++        super.onCleared()
++    }
++
++    class Factory(private val container: AppContainer) : ViewModelProvider.Factory {
++        @Suppress("UNCHECKED_CAST")
++        override fun <T : ViewModel> create(modelClass: Class<T>): T =
++            OfflineAnalysisViewModel(container) as T
++    }
++
++    private data class ImageResult(
++        val preview: Bitmap,
++        val detections: List<Detection>,
++        val inferenceMs: Long,
++    )
++
++    private companion object {
++        const val MAX_IMAGE_SIDE = 2048
++        const val MAX_VIDEO_FRAME_SIDE = 1280
++        const val VIDEO_SAMPLE_INTERVAL_MS = 500L
++        const val MAX_VIDEO_SAMPLES = 600
++    }
++}
+diff -ruN defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
+--- defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt	2026-07-21 20:34:08.000000000 +0000
++++ defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt	2026-07-22 11:59:32.950332489 +0000
+@@ -21,7 +21,8 @@
+             Text("Дефектоскоп AI", style = MaterialTheme.typography.headlineSmall)
+             Text(
+                 "Приложение помогает обнаруживать сквозные и поверхностные трещины " +
+-                    "на изображении с камеры и предупреждает пользователя звуком, вибрацией или голосом.",
++                    "с камеры телефона, внешнего эндоскопа, фотографий и видеороликов. " +
++                    "При обнаружении приложение может предупредить звуком, вибрацией или голосом.",
+                 modifier = Modifier.padding(vertical = 16.dp),
+             )
+             LabeledValue("Типы неисправностей", "Сквозная и поверхностная трещина")
+diff -ruN defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/HomeScreen.kt defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/HomeScreen.kt
+--- defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/HomeScreen.kt	2026-07-21 20:34:08.000000000 +0000
++++ defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/screens/HomeScreen.kt	2026-07-22 11:57:03.018336741 +0000
+@@ -11,11 +11,15 @@
+ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.layout.safeDrawingPadding
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.verticalScroll
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.CameraAlt
+ import androidx.compose.material.icons.filled.History
+ import androidx.compose.material.icons.filled.Info
++import androidx.compose.material.icons.filled.VideoLibrary
+ import androidx.compose.material.icons.filled.Settings
+ import androidx.compose.material3.Button
+ import androidx.compose.material3.ButtonDefaults
+@@ -35,6 +39,7 @@
+ @Composable
+ fun HomeScreen(
+     onStart: () -> Unit,
++    onOffline: () -> Unit,
+     onSettings: () -> Unit,
+     onHistory: () -> Unit,
+     onAbout: () -> Unit,
+@@ -48,7 +53,11 @@
+                     .background(MaterialTheme.colorScheme.primary),
+             )
+             Column(
+-                modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 44.dp),
++                modifier = Modifier
++                    .fillMaxSize()
++                    .safeDrawingPadding()
++                    .verticalScroll(rememberScrollState())
++                    .padding(horizontal = 24.dp, vertical = 28.dp),
+                 horizontalAlignment = Alignment.CenterHorizontally,
+                 verticalArrangement = Arrangement.Center,
+             ) {
+@@ -79,6 +88,7 @@
+                 }
+                 Spacer(Modifier.height(28.dp))
+                 MenuButton("Начать проверку", Icons.Default.CameraAlt, onStart, primary = true)
++                MenuButton("Проверить фото или видео", Icons.Default.VideoLibrary, onOffline)
+                 MenuButton("Настройки", Icons.Default.Settings, onSettings)
+                 MenuButton("История обнаружений", Icons.Default.History, onHistory)
+                 MenuButton("О приложении", Icons.Default.Info, onAbout)
