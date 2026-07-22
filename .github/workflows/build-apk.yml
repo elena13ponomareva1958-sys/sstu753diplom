@@ -1,13 +1,14 @@
-name: Build Defectoscope AI APK
+name: Build Defectoscope AI Diagnostics APK
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - android-defectoscope-ai-1.1.0
+      - android-defectoscope-diagnostics-1.2.0
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_overlay/**'
+      - 'ci_diag/**'
   pull_request:
     branches: [ main ]
 
@@ -54,7 +55,19 @@ jobs:
           gzip -t overlay.tar.gz
           tar -xzf overlay.tar.gz -C project
           rm -f overlay.tar.gz overlay.b64
-          grep -n 'litert' project/app/build.gradle.kts
+
+      - name: Apply diagnostics overlay
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat ci_diag/diag_*.txt > diagnostics.b64
+          test "$(sha256sum diagnostics.b64 | awk '{print $1}')" = "f6c80a47fec6dbbcb18b876d492560c345891960919cc5ce2839a321cff6de13"
+          base64 --decode diagnostics.b64 > diagnostics.tar.gz
+          test "$(sha256sum diagnostics.tar.gz | awk '{print $1}')" = "fb06cdbbdaf1c64e226e5b823ee1b527d2e44747b310c4d17bf1563c9d701e15"
+          gzip -t diagnostics.tar.gz
+          tar -xzf diagnostics.tar.gz -C project
+          rm -f diagnostics.tar.gz diagnostics.b64
+          grep -n 'versionCode\|versionName\|litert' project/app/build.gradle.kts
 
       - uses: actions/setup-java@v4
         with:
@@ -112,7 +125,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-build-log
+          name: diagnostics-gradle-build-log
           if-no-files-found: error
           path: gradle-build.log
 
@@ -133,7 +146,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: defectoscope-ai-shell-and-tools
+          name: defectoscope-ai-diagnostics-shell-and-tools
           if-no-files-found: error
           path: |
             project/app/build/outputs/apk/debug/app-debug.apk
