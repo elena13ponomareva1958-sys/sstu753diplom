@@ -1,14 +1,15 @@
-name: Build Defectoscope AI Diagnostics APK
+name: Build Defectoscope AI Coordinate Fix APK
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - android-defectoscope-diagnostics-1.2.0
+      - android-defectoscope-coordinate-fix-1.3.0
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_overlay/**'
       - 'ci_diag/**'
+      - 'ci_coordinate_fix/**'
   pull_request:
     branches: [ main ]
 
@@ -67,7 +68,20 @@ jobs:
           gzip -t diagnostics.tar.gz
           tar -xzf diagnostics.tar.gz -C project
           rm -f diagnostics.tar.gz diagnostics.b64
+
+      - name: Apply coordinate conversion fix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat ci_coordinate_fix/coordinate_fix_*.txt > coordinate_fix.b64
+          test "$(sha256sum coordinate_fix.b64 | awk '{print $1}')" = "1e891a48f0a28460de34784674f964095d6d3c5e1ba451c5886ada203051116d"
+          base64 --decode coordinate_fix.b64 > coordinate_fix.tar.gz
+          test "$(sha256sum coordinate_fix.tar.gz | awk '{print $1}')" = "1eeca3583606a51aaacb98d98b98ad01053328332432569a72ac8abe3597ddd8"
+          gzip -t coordinate_fix.tar.gz
+          tar -xzf coordinate_fix.tar.gz -C project
+          rm -f coordinate_fix.tar.gz coordinate_fix.b64
           grep -n 'versionCode\|versionName\|litert' project/app/build.gradle.kts
+          grep -n 'CoordinateFormat\|coordinateScale' project/app/src/main/java/ru/defectdetector/transmission/inference/YoloPostProcessor.kt
 
       - uses: actions/setup-java@v4
         with:
@@ -125,7 +139,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diagnostics-gradle-build-log
+          name: coordinate-fix-gradle-build-log
           if-no-files-found: error
           path: gradle-build.log
 
@@ -146,7 +160,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: defectoscope-ai-diagnostics-shell-and-tools
+          name: defectoscope-ai-coordinate-fix-shell-and-tools
           if-no-files-found: error
           path: |
             project/app/build/outputs/apk/debug/app-debug.apk
