@@ -1,0 +1,135 @@
+name: Build Defectoscope AI 1.5.2 final
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Restore verified 1.5.2 project
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(sha256sum ci_152/seg_0500.txt | awk '{print $1}')" = "c478f02d4886d8b69772ef59031ba78c7f5fafa5ac9a09b59c74eb33dcf81b2f"
+          test "$(sha256sum ci_152/seg_0501.txt | awk '{print $1}')" = "d80d86de289da930c24aa29fee747d74ced93eed066165fb9dbcace987a3d4c1"
+          cat \
+            ci_152/src_00.txt \
+            ci_152/src_01.txt \
+            ci_152/seg_020.txt \
+            ci_152/seg_021.txt \
+            ci_152/seg_022.txt \
+            ci_152/src_03.txt \
+            ci_152/seg_040.txt \
+            ci_152/seg_041.txt \
+            ci_152/seg_042.txt \
+            ci_152/seg_0500.txt \
+            ci_152/seg_0501.txt \
+            ci_152/seg_051.txt \
+            ci_152/seg_052.txt > project.tar.xz.b64
+          test "$(wc -c < project.tar.xz.b64)" -eq 51820
+          test "$(sha256sum project.tar.xz.b64 | awk '{print $1}')" = "91536ac31216447f8810f9ffe12d7654e14de588a393b21ef7482f185fdd3702"
+          base64 --decode project.tar.xz.b64 > project.tar.xz
+          test "$(sha256sum project.tar.xz | awk '{print $1}')" = "53b7295e65e984305fe738f106881d07cbaee64720a98525c31611cc0bd70fea"
+          xz -t project.tar.xz
+          mkdir -p project
+          tar -xJf project.tar.xz -C project
+          test -f project/settings.gradle.kts
+          test "$(find project/app/src/main/java -type f | wc -l)" -eq 42
+          test "$(grep -c 'versionCode = 8' project/app/build.gradle.kts)" -eq 1
+          test "$(grep -c 'versionName = \"1.5.2\"' project/app/build.gradle.kts)" -eq 1
+          grep -q 'by PCHOLko' project/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
+          grep -q '© 2026' project/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
+
+      - name: Restore wheelset image and alert sounds
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p project/app/src/main/res/drawable project/app/src/main/res/raw project/app/src/main/assets/models
+          base64 --decode ci_152/about_wheelset_micro.b64 > project/app/src/main/res/drawable/about_wheelset.webp
+          test "$(sha256sum project/app/src/main/res/drawable/about_wheelset.webp | awk '{print $1}')" = "e74b55972d3507d95ea93cd45660741458f213581196505b4e61b9e9c92072be"
+          printf 'PLACEHOLDER_MODEL_320' > project/app/src/main/assets/models/best_320.tflite
+          printf 'PLACEHOLDER_MODEL_416' > project/app/src/main/assets/models/best_416.tflite
+          printf 'PLACEHOLDER_MODEL_640' > project/app/src/main/assets/models/best_640.tflite
+          python3 - <<'PY'
+          import math, struct, wave
+          from pathlib import Path
+          root = Path('project/app/src/main/res/raw')
+          def tone(name, pattern):
+              rate = 22050
+              samples = []
+              for freq, dur, amp in pattern:
+                  for index in range(int(rate * dur)):
+                      samples.append(0 if freq == 0 else int(32767 * amp * math.sin(2 * math.pi * freq * index / rate)))
+              with wave.open(str(root / name), 'wb') as output:
+                  output.setnchannels(1)
+                  output.setsampwidth(2)
+                  output.setframerate(rate)
+                  output.writeframes(b''.join(struct.pack('<h', value) for value in samples))
+          tone('short_beep.wav', [(880, .14, .45)])
+          tone('double_alarm.wav', [(1050, .13, .55), (0, .08, 0), (1050, .13, .55)])
+          tone('sharp_alarm.wav', [(1350, .18, .65), (0, .06, 0), (1350, .18, .65)])
+          PY
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'platform-tools'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build debug APK
+        working-directory: project
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon clean assembleDebug --stacktrace 2>&1 | tee ../gradle-build-152.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: defectoscope-1-5-2-final-log
+          path: gradle-build-152.log
+          if-no-files-found: warn
+
+      - name: Collect signing and verification tools
+        shell: bash
+        run: |
+          mkdir -p signing-tools
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt2" signing-tools/
+          LIBCPP="$(find "$ANDROID_HOME/build-tools/35.0.0" -name 'libc++.so*' | head -n 1)"
+          test -n "$LIBCPP"
+          cp "$LIBCPP" signing-tools/libc++.so
+          chmod +x signing-tools/zipalign signing-tools/aapt signing-tools/aapt2
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: defectoscope-1-5-2-final-shell-tools
+          path: |
+            project/app/build/outputs/apk/debug/app-debug.apk
+            signing-tools/apksigner.jar
+            signing-tools/zipalign
+            signing-tools/aapt
+            signing-tools/aapt2
+            signing-tools/libc++.so
+          if-no-files-found: error
