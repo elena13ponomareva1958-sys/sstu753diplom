@@ -1,0 +1,140 @@
++                        contentDescription = if (analysisEnabled) "Остановить анализ" else "Запустить анализ",
++                    )
++                }
++                GlassIconButton(onClick = onSnapshot) {
++                    Icon(Icons.Default.PhotoCamera, contentDescription = "Снимок")
++                }
++                GlassIconButton(onClick = onToggleSound) {
++                    Icon(
++                        if (soundMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
++                        contentDescription = "Звук",
++                    )
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun GlassIconButton(
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++    enabled: Boolean = true,
++    selected: Boolean = false,
++    content: @Composable () -> Unit,
++) {
++    Surface(
++        modifier = modifier.size(52.dp),
++        shape = CircleShape,
++        color = when {
++            !enabled -> Color(0x55252A2F)
++            selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.88f)
++            else -> Color(0xA811161B)
++        },
++        contentColor = if (enabled) Color.White else Color.LightGray,
++        shadowElevation = 3.dp,
++    ) {
++        IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxSize()) {
++            content()
++        }
++    }
++}
++
++@Composable
++private fun ZoomButton(
++    value: Float,
++    selected: Boolean,
++    enabled: Boolean,
++    onClick: () -> Unit,
++) {
++    Surface(
++        modifier = Modifier
++            .size(45.dp)
++            .then(
++                if (selected) Modifier.border(2.dp, Color.White, CircleShape) else Modifier,
++            ),
++        shape = CircleShape,
++        color = if (selected) MaterialTheme.colorScheme.primary else Color(0x771B2025),
++        contentColor = if (enabled) Color.White else Color.Gray,
++    ) {
++        IconButton(onClick = onClick, enabled = enabled) {
++            Text("${value.toInt()}×")
++        }
+     }
+ }
+ 
+diff -ruN defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisScreen.kt defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisScreen.kt
+--- defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisScreen.kt	1970-01-01 00:00:00.000000000 +0000
++++ defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisScreen.kt	2026-07-22 11:56:46.470337210 +0000
+@@ -0,0 +1,182 @@
++package ru.defectdetector.transmission.ui.offline
++
++import androidx.activity.compose.rememberLauncherForActivityResult
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.compose.foundation.Image
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Cancel
++import androidx.compose.material.icons.filled.FolderOpen
++import androidx.compose.material.icons.filled.RestartAlt
++import androidx.compose.material3.Button
++import androidx.compose.material3.ButtonDefaults
++import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.Icon
++import androidx.compose.material3.LinearProgressIndicator
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedButton
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.graphics.asImageBitmap
++import androidx.compose.ui.layout.ContentScale
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import ru.defectdetector.transmission.settings.AppSettings
++import ru.defectdetector.transmission.ui.components.LabeledValue
++import ru.defectdetector.transmission.ui.components.TechnicalScaffold
++import java.util.Locale
++
++@Composable
++fun OfflineAnalysisScreen(
++    settings: AppSettings,
++    viewModel: OfflineAnalysisViewModel,
++    onBack: () -> Unit,
++) {
++    val state by viewModel.state.collectAsState()
++    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
++        uri?.let { viewModel.analyze(it, settings) }
++    }
++
++    TechnicalScaffold(title = "Проверка фото и видео", onBack = onBack) { base ->
++        Column(
++            modifier = base
++                .fillMaxSize()
++                .verticalScroll(rememberScrollState())
++                .padding(18.dp),
++            verticalArrangement = Arrangement.spacedBy(14.dp),
++        ) {
++            Text(
++                "Выберите фотографию или видеоролик из памяти телефона. " +
++                    "Проверка выполняется на устройстве без подключения к интернету.",
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++            )
++
++            Button(
++                onClick = { picker.launch(arrayO
