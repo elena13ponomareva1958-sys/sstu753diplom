@@ -1,0 +1,30 @@
+name: Verify Defectoscope 1.5.2 source transfer
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          show-progress: false
+      - name: Capture source checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          {
+            wc -c ci_152/src_00.txt ci_152/src_01.txt ci_152/seg_020.txt ci_152/seg_021.txt ci_152/seg_022.txt ci_152/src_03.txt ci_152/seg_040.txt ci_152/seg_041.txt ci_152/seg_042.txt ci_152/seg_050.txt ci_152/seg_051.txt ci_152/seg_052.txt
+            sha256sum ci_152/src_00.txt ci_152/src_01.txt ci_152/seg_020.txt ci_152/seg_021.txt ci_152/seg_022.txt ci_152/src_03.txt ci_152/seg_040.txt ci_152/seg_041.txt ci_152/seg_042.txt ci_152/seg_050.txt ci_152/seg_051.txt ci_152/seg_052.txt
+            cat ci_152/src_00.txt ci_152/src_01.txt ci_152/seg_020.txt ci_152/seg_021.txt ci_152/seg_022.txt ci_152/src_03.txt ci_152/seg_040.txt ci_152/seg_041.txt ci_152/seg_042.txt ci_152/seg_050.txt ci_152/seg_051.txt ci_152/seg_052.txt > assembled.b64
+            wc -c assembled.b64
+            sha256sum assembled.b64
+          } | tee source-checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: defectoscope-1-5-2-source-checksums
+          path: source-checksums.txt
+          if-no-files-found: error
