@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_tgz/**'
+      - 'ci_patch/**'
   pull_request:
     branches: [ main ]
 
@@ -40,6 +41,17 @@ jobs:
           tar -xzf project.tar.gz -C project
           test -f project/settings.gradle.kts
           rm -f project.tar.gz project.b64
+
+      - name: Apply 1.5.0 source patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          base64 --decode ci_patch/build_1_5_0.patch.gz.b64 | gunzip > build_1_5_0.patch
+          test "$(sha256sum build_1_5_0.patch | awk '{print $1}')" = "d0f52117538266c93e3c10dea2a59295c75f4b26a92a04dfc7d4d8df1e126d66"
+          patch -d project -p1 < build_1_5_0.patch
+          grep -nE 'versionCode|versionName' project/app/build.gradle.kts
+          test "$(grep -c 'versionCode = 6' project/app/build.gradle.kts)" -eq 1
+          test "$(grep -c 'versionName = \"1.5.0\"' project/app/build.gradle.kts)" -eq 1
 
       - name: Apply dependency compatibility fix
         shell: bash
