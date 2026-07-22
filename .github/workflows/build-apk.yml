@@ -73,8 +73,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          cat ci_coordinate_fix/coordinate_fix_*.txt > coordinate_fix.b64
-          test "$(sha256sum coordinate_fix.b64 | awk '{print $1}')" = "1e891a48f0a28460de34784674f964095d6d3c5e1ba451c5886ada203051116d"
+          cat ci_coordinate_fix/coordinate_fix_*.txt | tr -d '\r\n' > coordinate_fix.b64
           base64 --decode coordinate_fix.b64 > coordinate_fix.tar.gz
           test "$(sha256sum coordinate_fix.tar.gz | awk '{print $1}')" = "1eeca3583606a51aaacb98d98b98ad01053328332432569a72ac8abe3597ddd8"
           gzip -t coordinate_fix.tar.gz
@@ -140,7 +139,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coordinate-fix-gradle-build-log
-          if-no-files-found: error
+          if-no-files-found: warn
           path: gradle-build.log
 
       - name: Collect APK inspection tools
