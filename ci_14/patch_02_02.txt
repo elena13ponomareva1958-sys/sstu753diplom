@@ -1,0 +1,143 @@
+/defectdetector/transmission/ui/offline/OfflineAnalysisViewModel.kt	2026-07-22 12:00:23.694331050 +0000
+@@ -0,0 +1,373 @@
++package ru.defectdetector.transmission.ui.offline
++
++import android.graphics.Bitmap
++import android.graphics.BitmapFactory
++import android.graphics.ImageDecoder
++import android.media.MediaMetadataRetriever
++import android.net.Uri
++import android.os.Build
++import android.provider.OpenableColumns
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.ViewModelProvider
++import androidx.lifecycle.viewModelScope
++import java.util.Locale
++import kotlin.math.ceil
++import kotlin.math.max
++import kotlin.math.min
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.ensureActive
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++import ru.defectdetector.transmission.data.history.DetectionEntity
++import ru.defectdetector.transmission.di.AppContainer
++import ru.defectdetector.transmission.inference.LiteRtYoloDetector
++import ru.defectdetector.transmission.model.Detection
++import ru.defectdetector.transmission.settings.AppSettings
++import ru.defectdetector.transmission.utils.DetectionFileStore
++
++data class OfflineAnalysisUiState(
++    val busy: Boolean = false,
++    val progress: Float = 0f,
++    val sourceName: String? = null,
++    val sourceType: String? = null,
++    val message: String? = null,
++    val isError: Boolean = false,
++    val preview: Bitmap? = null,
++    val processedFrames: Int = 0,
++    val totalFrames: Int = 0,
++    val defectFrames: Int = 0,
++    val detections: List<Detection> = emptyList(),
++    val maxConfidence: Float = 0f,
++    val inferenceMs: Long = 0L,
++)
++
++class OfflineAnalysisViewModel(private val container: AppContainer) : ViewModel() {
++    private val _state = MutableStateFlow(OfflineAnalysisUiState())
++    val state = _state.asStateFlow()
++    private var analysisJob: Job? = null
++
++    fun analyze(uri: Uri, settings: AppSettings) {
++        analysisJob?.cancel()
++        analysisJob = viewModelScope.launch {
++            val name = queryDisplayName(uri)
++            val mime = container.appContext.contentResolver.getType(uri).orEmpty()
++            val isVideo = mime.startsWith("video/") || name.lowercase(Locale.ROOT).let {
++                it.endsWith(".mp4") || it.endsWith(".mkv") || it.endsWith(".avi") ||
++                    it.endsWith(".mov") || it.endsWith(".webm") || it.endsWith(".3gp")
++            }
++            _state.value = OfflineAnalysisUiState(
++                busy = true,
++                sourceName = name,
++                sourceType = when {
++                    isVideo -> "Видео"
++                    mime.startsWith("image/") -> "Изображение"
++                    else -> "Файл"
++                },
++                message = "Подготовка файла к проверке…",
++            )
++
++            try {
++                if (isVideo) {
++                    analyzeVideo(uri, name, settings)
++                } else {
++                    analyzeImage(uri, name, settings)
++                }
++            } catch (_: CancellationException) {
++                _state.value = _state.value.copy(
++                    busy = false,
++                    message = "Проверка остановлена",
++                    isError = false,
++                )
++            } catch (error: Throwable) {
++                _state.value = _state.value.copy(
++                    busy = false,
++                    isError = true,
++                    message = "Не удалось проверить файл: ${error.message ?: error.javaClass.simpleName}",
++                )
++            }
++        }
++    }
++
++    fun cancel() {
++        analysisJob?.cancel()
++    }
++
++    fun clear() {
++        analysisJob?.cancel()
++        replacePreview(null)
++        _state.value = OfflineAnalysisUiState()
++    }
++
++    private suspend fun analyzeImage(uri: Uri, name: String, settings: AppSettings) {
++        val result = withContext(Dispatchers.Default) {
++            val bitmap = decodeImage(uri)
++            try {
++                LiteRtYoloDetector(container.appContext).use { detector ->
++                    val inference = detector.detect(
++                        source = bitmap,
++                        settings = settings,
++                        confidenceThreshold = settings.confidenceThreshold,
++                        iouThreshold = settings.iouThreshold,
++                    )
++                    val preview = bitmap.copy(Bitmap.Config.ARGB_8888, true)
++                        ?: error("Не удалось подготовить изображение")
++                    DetectionFileStore.drawDetections(preview, inference.detections)
++                    if (settings.autoSaveDetections && inference.detections.isNotEmpty()) {
++                        saveToHistory(bitmap, inference.detections)
++                    }
++                    ImageResult(preview, inference.detections, inference.inferenceMs)
++                }
++            } finally {
++                bitmap.recycle()
++            }
++        }
++
++        replacePreview(result.preview)
++        _state.value = OfflineAnalysisUiState(
++            sourceName = name,
++            sourceType = "Изображение",
++            preview = result.preview,
++            processedFrames = 1,
++            totalFrames = 1,
++            defectFrames = if (result.detections.isEmpty()) 0 else 1,
++            detections = result.detections,
++            maxConfidence = result.detections.maxOfOrNull { it.confidence } ?: 0f,
++            inferenceMs = result.inferenceMs,
++            message = if (result.detections.isEmpty()) {
++                "Проверка завершена: неисправностей не обнаружено"
