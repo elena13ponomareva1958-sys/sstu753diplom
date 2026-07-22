@@ -1,0 +1,115 @@
+f("image/*", "video/*")) },
++                enabled = !state.busy,
++                modifier = Modifier.fillMaxWidth().height(56.dp),
++                shape = RoundedCornerShape(12.dp),
++            ) {
++                Icon(Icons.Default.FolderOpen, contentDescription = null)
++                Spacer(Modifier.size(10.dp))
++                Text("Выбрать фото или видео")
++            }
++
++            if (state.busy) {
++                Surface(
++                    modifier = Modifier.fillMaxWidth(),
++                    shape = RoundedCornerShape(14.dp),
++                    color = MaterialTheme.colorScheme.surfaceVariant,
++                ) {
++                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++                        Row(verticalAlignment = Alignment.CenterVertically) {
++                            CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
++                            Spacer(Modifier.size(12.dp))
++                            Text(state.message ?: "Выполняется проверка…", modifier = Modifier.weight(1f))
++                        }
++                        LinearProgressIndicator(
++                            progress = { state.progress.coerceIn(0f, 1f) },
++                            modifier = Modifier.fillMaxWidth(),
++                        )
++                        OutlinedButton(onClick = viewModel::cancel, modifier = Modifier.fillMaxWidth()) {
++                            Icon(Icons.Default.Cancel, contentDescription = null)
++                            Spacer(Modifier.size(8.dp))
++                            Text("Остановить проверку")
++                        }
++                    }
++                }
++            }
++
++            state.message?.takeIf { !state.busy }?.let { message ->
++                Surface(
++                    modifier = Modifier.fillMaxWidth(),
++                    shape = RoundedCornerShape(12.dp),
++                    color = if (state.isError) {
++                        MaterialTheme.colorScheme.errorContainer
++                    } else {
++                        MaterialTheme.colorScheme.surfaceVariant
++                    },
++                ) {
++                    Text(
++                        message,
++                        modifier = Modifier.padding(16.dp),
++                        color = if (state.isError) {
++                            MaterialTheme.colorScheme.onErrorContainer
++                        } else {
++                            MaterialTheme.colorScheme.onSurfaceVariant
++                        },
++                    )
++                }
++            }
++
++            if (state.sourceName != null) {
++                Surface(
++                    modifier = Modifier.fillMaxWidth(),
++                    shape = RoundedCornerShape(14.dp),
++                    color = MaterialTheme.colorScheme.surfaceVariant,
++                ) {
++                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                        Text("Результат проверки", fontWeight = FontWeight.Bold)
++                        LabeledValue("Файл", state.sourceName ?: "—")
++                        LabeledValue("Тип", state.sourceType ?: "—")
++                        if (state.totalFrames > 0) {
++                            LabeledValue("Проверено кадров", "${state.processedFrames} из ${state.totalFrames}")
++                        }
++                        LabeledValue("Кадров с дефектом", state.defectFrames.toString())
++                        LabeledValue("Найдено объектов", state.detections.size.toString())
++                        LabeledValue(
++                            "Максимальная уверенность",
++                            String.format(Locale.getDefault(), "%.1f%%", state.maxConfidence * 100f),
++                        )
++                        if (state.inferenceMs > 0) {
++                            LabeledValue("Среднее время анализа", "${state.inferenceMs} мс")
++                        }
++                    }
++                }
++            }
++
++            state.preview?.let { bitmap ->
++                Surface(
++                    modifier = Modifier.fillMaxWidth(),
++                    shape = RoundedCornerShape(14.dp),
++                    color = MaterialTheme.colorScheme.surfaceVariant,
++                ) {
++                    Image(
++                        bitmap = bitmap.asImageBitmap(),
++                        contentDescription = "Результат проверки",
++                        modifier = Modifier.fillMaxWidth().padding(10.dp),
++                        contentScale = ContentScale.Fit,
++                    )
++                }
++            }
++
++            if (state.sourceName != null && !state.busy) {
++                OutlinedButton(
++                    onClick = viewModel::clear,
++                    modifier = Modifier.fillMaxWidth(),
++                    colors = ButtonDefaults.outlinedButtonColors(),
++                ) {
++                    Icon(Icons.Default.RestartAlt, contentDescription = null)
++                    Spacer(Modifier.size(8.dp))
++                    Text("Выбрать другой файл")
++                }
++            }
++        }
++    }
++}
+diff -ruN defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisViewModel.kt defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisViewModel.kt
+--- defectoscope_140_base/TransmissionDefectDetectorAndroid/app/src/main/java/ru/defectdetector/transmission/ui/offline/OfflineAnalysisViewModel.kt	1970-01-01 00:00:00.000000000 +0000
++++ defectoscope_140/TransmissionDefectDetectorAndroid/app/src/main/java/ru
