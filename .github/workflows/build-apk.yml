@@ -22,12 +22,36 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p project
-          cat ci_152/src_*.txt > project.tar.xz.b64
+          test "$(sha256sum ci_152/src_00.txt | awk '{print $1}')" = "552580d5fa8ce24d29f00e0a2fb3ecef7b98ea42de22ac524d445c84e550f268"
+          test "$(sha256sum ci_152/src_01.txt | awk '{print $1}')" = "4f594c87b429943889a4377357c5e9fe1e27d6ab188bfe24ab50403938e0f5a5"
+          test "$(sha256sum ci_152/seg_020.txt | awk '{print $1}')" = "3698560f28266442a9159cb9198807d7c8adc5b8836dc5fb518cd9720a14b3ea"
+          test "$(sha256sum ci_152/seg_021.txt | awk '{print $1}')" = "aa56fb8a0ffa472be0bf9fd03bc6b0bb5d60f058754986a31959ce1658e344b4"
+          test "$(sha256sum ci_152/seg_022.txt | awk '{print $1}')" = "d43245029d3865ac388a1a037d2d3b477ce1df5d41b845a3ec43a23b825f800c"
+          test "$(sha256sum ci_152/src_03.txt | awk '{print $1}')" = "ba5a94269c306043919b849adf66dc01376ffe51ff0aadbb5c04be44b21a78b1"
+          test "$(sha256sum ci_152/seg_040.txt | awk '{print $1}')" = "d53907981f0bea3a90f8b55c93fbf940c12929281ba1e5e617f4ff2719bc471a"
+          test "$(sha256sum ci_152/seg_041.txt | awk '{print $1}')" = "1d683c8849717b32ad6fc2050e744c554f051cc40a991e95a4107cd7bc0e614a"
+          test "$(sha256sum ci_152/seg_042.txt | awk '{print $1}')" = "e7fc062f5fc22ecfcc93d37ea49fee45a8ec5064b6812a864d73b9c835e059d4"
+          test "$(sha256sum ci_152/seg_050.txt | awk '{print $1}')" = "985ff36ece8b8855854bbb2dbfc49855fbda5e0bd28840a1b4cc766796ba4535"
+          test "$(sha256sum ci_152/seg_051.txt | awk '{print $1}')" = "aaf9418b0f35c4d8aa7d063426b0c519729c80b387d27bf7a748fb04995e05f0"
+          test "$(sha256sum ci_152/seg_052.txt | awk '{print $1}')" = "d14428e45a9f6549186ecb154d4f4cfab1a7652b526725dc82f0bfe0aee2dfef"
+          cat \
+            ci_152/src_00.txt \
+            ci_152/src_01.txt \
+            ci_152/seg_020.txt \
+            ci_152/seg_021.txt \
+            ci_152/seg_022.txt \
+            ci_152/src_03.txt \
+            ci_152/seg_040.txt \
+            ci_152/seg_041.txt \
+            ci_152/seg_042.txt \
+            ci_152/seg_050.txt \
+            ci_152/seg_051.txt \
+            ci_152/seg_052.txt > project.tar.xz.b64
           test "$(sha256sum project.tar.xz.b64 | awk '{print $1}')" = "91536ac31216447f8810f9ffe12d7654e14de588a393b21ef7482f185fdd3702"
           base64 --decode project.tar.xz.b64 > project.tar.xz
           test "$(sha256sum project.tar.xz | awk '{print $1}')" = "53b7295e65e984305fe738f106881d07cbaee64720a98525c31611cc0bd70fea"
           xz -t project.tar.xz
+          mkdir -p project
           tar -xJf project.tar.xz -C project
           test -f project/settings.gradle.kts
           test -f project/app/src/main/java/ru/defectdetector/transmission/ui/camera/CameraScreen.kt
