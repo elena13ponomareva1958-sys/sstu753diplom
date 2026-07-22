@@ -1,4 +1,4 @@
-name: Build Defectoscope AI repair APK
+name: Build Defectoscope AI 1.5.2
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_full151/**'
+      - 'ci_152/**'
   pull_request:
     branches: [ main ]
 
@@ -24,18 +25,30 @@ jobs:
           set -euxo pipefail
           mkdir -p project
           cat ci_full151/full_151_*.txt > full_project.tar.xz.b64
-          test "$(sha256sum full_project.tar.xz.b64 | awk '{print $1}')" = "39722b753f5a4c15d425e2c6cbb591607a69a6ce3214e0c99de66212e8e9ee42"
           base64 --decode full_project.tar.xz.b64 > full_project.tar.xz
-          test "$(sha256sum full_project.tar.xz | awk '{print $1}')" = "5ef6314d0e41b0ae3f3cf4c8bdd690e0c47e760046bc6f87d9939cdf6a54f826"
           xz -t full_project.tar.xz
           tar -xJf full_project.tar.xz -C project
           test -f project/settings.gradle.kts
           test -f project/app/src/main/java/ru/defectdetector/transmission/ui/camera/CameraScreen.kt
+          test -f project/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
           test "$(find project/app/src/main/java -type f | wc -l)" -eq 42
-          grep -nE 'versionCode|versionName' project/app/build.gradle.kts
-          test "$(grep -c 'versionCode = 7' project/app/build.gradle.kts)" -eq 1
-          test "$(grep -c 'versionName = \"1.5.1\"' project/app/build.gradle.kts)" -eq 1
           rm -f full_project.tar.xz full_project.tar.xz.b64
+
+      - name: Apply About screen and version 1.5.2
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp ci_152/AboutScreen.kt project/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
+          mkdir -p project/app/src/main/res/drawable
+          base64 --decode ci_152/about_wheelset_micro.b64 > project/app/src/main/res/drawable/about_wheelset.webp
+          test "$(sha256sum project/app/src/main/res/drawable/about_wheelset.webp | awk '{print $1}')" = "e74b55972d3507d95ea93cd45660741458f213581196505b4e61b9e9c92072be"
+          sed -i 's/versionCode = 7/versionCode = 8/' project/app/build.gradle.kts
+          sed -i 's/versionName = "1.5.1"/versionName = "1.5.2"/' project/app/build.gradle.kts
+          grep -nE 'versionCode|versionName' project/app/build.gradle.kts
+          test "$(grep -c 'versionCode = 8' project/app/build.gradle.kts)" -eq 1
+          test "$(grep -c 'versionName = \"1.5.2\"' project/app/build.gradle.kts)" -eq 1
+          grep -q 'by PCHOLko' project/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
+          grep -q '© 2026' project/app/src/main/java/ru/defectdetector/transmission/ui/screens/AboutScreen.kt
 
       - uses: actions/setup-java@v4
         with:
@@ -73,7 +86,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: repair-gradle-build-log
+          name: defectoscope-1-5-2-gradle-build-log
           if-no-files-found: error
           path: gradle-build.log
 
@@ -92,7 +105,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: defectoscope-repair-shell-and-tools
+          name: defectoscope-1-5-2-shell-and-tools
           if-no-files-found: error
           path: |
             project/app/build/outputs/apk/debug/app-debug.apk
