@@ -1,0 +1,426 @@
++        onDispose { runCatching { context.unregisterReceiver(usbReceiver) } }
++    }
++
+     LaunchedEffect(Unit) {
+         if (!permissionGranted) permissionLauncher.launch(Manifest.permission.CAMERA)
+     }
+ 
++    LaunchedEffect(focusPulse) {
++        if (focusPulse > 0) {
++            delay(1_300)
++            focusPoint = null
++        }
++    }
++
+     DisposableEffect(Unit) {
+         onDispose {
++            previewView.setOnTouchListener(null)
+             camera?.cameraControl?.enableTorch(false)
+             provider?.unbindAll()
+             runCatching { executor.execute { detector.close() } }
+@@ -157,32 +290,40 @@
+         return
+     }
+ 
+-    LaunchedEffect(previewView, cameraFacing, settings.effectiveInputSize) {
++    LaunchedEffect(previewView, cameraSource, settings.effectiveInputSize, rebindToken) {
+         cameraBindError = null
+         try {
+             val cameraProvider = ProcessCameraProvider.getInstance(context).await()
+             provider = cameraProvider
+             cameraProvider.unbindAll()
+ 
+-            val backAvailable = cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)
+-            val frontAvailable = cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
++            val backSelector = CameraSelector.DEFAULT_BACK_CAMERA
++            val frontSelector = CameraSelector.DEFAULT_FRONT_CAMERA
++            val externalSelector = CameraSelector.Builder()
++                .requireLensFacing(CameraSelector.LENS_FACING_EXTERNAL)
++                .build()
++
++            val backAvailable = runCatching { cameraProvider.hasCamera(backSelector) }.getOrDefault(false)
++            val frontAvailable = runCatching { cameraProvider.hasCamera(frontSelector) }.getOrDefault(false)
++            externalCameraAvailable = runCatching { cameraProvider.hasCamera(externalSelector) }.getOrDefault(false)
+             canSwitchCamera = backAvailable && frontAvailable
+ 
+-            val preferred = if (cameraFacing == CameraFacing.BACK) {
+-                CameraSelector.DEFAULT_BACK_CAMERA
+-            } else {
+-                CameraSelector.DEFAULT_FRONT_CAMERA
+-            }
+-            val fallback = if (backAvailable) {
+-                CameraSelector.DEFAULT_BACK_CAMERA
+-            } else {
+-                CameraSelector.DEFAULT_FRONT_CAMERA
+-            }
+-            val selector = if (cameraProvider.hasCamera(preferred)) preferred else fallback
+-            cameraFacing = if (selector == CameraSelector.DEFAULT_FRONT_CAMERA) {
+-                CameraFacing.FRONT
+-            } else {
+-                CameraFacing.BACK
++            val selector = when (cameraSource) {
++                CameraSource.BACK -> if (backAvailable) backSelector else frontSelector
++                CameraSource.FRONT -> if (frontAvailable) frontSelector else backSelector
++                CameraSource.EXTERNAL -> {
++                    if (externalCameraAvailable) {
++                        externalSelector
++                    } else {
++                        cameraSource = if (backAvailable) CameraSource.BACK else CameraSource.FRONT
++                        sourceMessage = if (UsbEndoscopeSupport.findVideoDevice(context) != null) {
++                            "Эндоскоп найден по USB, но телефон не предоставляет его как внешнюю камеру"
++                        } else {
++                            "Эндоскоп не найден. Подключите UVC-камеру через OTG"
++                        }
++                        if (backAvailable) backSelector else frontSelector
++                    }
++                }
+             }
+ 
+             if (previewView.width == 0 || previewView.height == 0) {
+@@ -193,46 +334,99 @@
+                 }
+             }
+ 
+-            val preview = Preview.Builder().build().also {
+-                it.setSurfaceProvider(previewView.surfaceProvider)
+-            }
+-            val analysis = ImageAnalysis.Builder()
++            val previewBuilder = Preview.Builder()
++            val analysisBuilder = ImageAnalysis.Builder()
+                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+-                .build()
+ 
++            if (cameraSource != CameraSource.EXTERNAL) {
++                Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
++                    CaptureRequest.CONTROL_AF_MODE,
++                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
++                )
++                Camera2Interop.Extender(analysisBuilder).setCaptureRequestOption(
++                    CaptureRequest.CONTROL_AF_MODE,
++                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
++                )
++            }
++
++            val preview = previewBuilder.build().also {
++                it.setSurfaceProvider(previewView.surfaceProvider)
++            }
++            val analysis = analysisBuilder.build()
+             analysis.setAnalyzer(
+                 executor,
+                 CameraAnalyzer(
+                     detector = detector,
+                     settingsProvider = { latestSettings },
+-                    isFrontCamera = { latestCameraFacing == CameraFacing.FRONT },
++                    isFrontCamera = { latestCameraSource == CameraSource.FRONT },
+                     analysisEnabled = { latestAnalysisEnabled },
+                     onResult = { result, bitmap ->
+                         viewModel.onFrame(result, bitmap, latestSettings)
+                     },
+                 ),
+             )
++
+             val useCaseGroup = UseCaseGroup.Builder()
+                 .addUseCase(preview)
+                 .addUseCase(analysis)
+-                .apply {
+-                    previewView.viewPort?.let { setViewPort(it) }
+-                }
++                .apply { previewView.viewPort?.let { setViewPort(it) } }
+                 .build()
+ 
+-            camera = cameraProvider.bindToLifecycle(
+-                lifecycleOwner,
+-                selector,
+-                useCaseGroup,
+-            )
++            val boundCamera = cameraProvider.bindToLifecycle(lifecycleOwner, selector, useCaseGroup)
++            camera = boundCamera
+             torchEnabled = false
++
++            boundCamera.cameraInfo.zoomState.value?.let { state ->
++                minZoomRatio = state.minZoomRatio
++                maxZoomRatio = state.maxZoomRatio
++                zoomRatio = state.zoomRatio.coerceIn(minZoomRatio, maxZoomRatio)
++            }
++
++            previewView.setOnTouchListener { view, event ->
++                scaleGestureDetector.onTouchEvent(event)
++                if (event.action == MotionEvent.ACTION_UP && !scaleGestureDetector.isInProgress) {
++                    focusAt(event.x, event.y)
++                    view.performClick()
++                }
++                true
++            }
++
++            if (cameraSource != CameraSource.EXTERNAL) {
++                previewView.post {
++                    focusAt(previewView.width / 2f, previewView.height / 2f)
++                }
++            }
+         } catch (error: Throwable) {
+             camera = null
+             cameraBindError = error.message ?: error.javaClass.simpleName
+         }
+     }
+ 
++    val selectEndoscope: () -> Unit = {
++        if (cameraSource == CameraSource.EXTERNAL) {
++            cameraSource = CameraSource.BACK
++            sourceMessage = "Выбрана камера телефона"
++        } else if (externalCameraAvailable) {
++            cameraSource = CameraSource.EXTERNAL
++            sourceMessage = "Выбран эндоскоп"
++        } else {
++            val usbDevice = UsbEndoscopeSupport.findVideoDevice(context)
++            when {
++                usbDevice == null -> sourceMessage = "Эндоскоп не найден. Проверьте OTG-переходник и питание"
++                UsbEndoscopeSupport.hasPermission(context, usbDevice) -> {
++                    sourceMessage = "Эндоскоп найден. Проверяется поддержка внешней камеры…"
++                    cameraSource = CameraSource.EXTERNAL
++                    rebindToken++
++                }
++                else -> {
++                    sourceMessage = "Требуется разрешение на использование эндоскопа"
++                    UsbEndoscopeSupport.requestPermission(context, usbDevice, usbPermissionAction)
++                }
++            }
++        }
++    }
++
+     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+         DetectionOverlay(
+@@ -241,35 +435,72 @@
+             showConfidence = settings.confidenceEnabled,
+         )
+ 
++        focusPoint?.let { point ->
++            Canvas(Modifier.fillMaxSize()) {
++                drawCircle(
++                    color = when (focusSuccessful) {
++                        true -> Color(0xFF43A047)
++                        false -> Color(0xFFE53935)
++                        null -> Color.White
++                    },
++                    radius = 34.dp.toPx(),
++                    center = point,
++                    style = Stroke(width = 2.dp.toPx()),
++                )
++                drawCircle(
++                    color = Color.White.copy(alpha = 0.65f),
++                    radius = 4.dp.toPx(),
++                    center = point,
++                )
++            }
++        }
++
+         CameraTopPanel(
+             frame = frame,
+             showFps = settings.fpsEnabled,
+             cameraBindError = cameraBindError,
+             analysisEnabled = analysisEnabled,
++            sourceName = cameraSource.displayName,
++            sourceMessage = sourceMessage,
++            zoomRatio = zoomRatio,
+             onBack = onBack,
+             modifier = Modifier.align(Alignment.TopCenter),
+         )
+ 
+-        CameraControls(
+-            analysisEnabled = analysisEnabled,
+-            soundMuted = soundMuted,
++        CameraSideControls(
+             torchEnabled = torchEnabled,
+             hasFlash = camera?.cameraInfo?.hasFlashUnit() == true,
+             canSwitchCamera = canSwitchCamera,
+-            onToggleAnalysis = { viewModel.setAnalysisEnabled(!analysisEnabled) },
+-            onToggleSound = viewModel::toggleSoundMuted,
++            endoscopeSelected = cameraSource == CameraSource.EXTERNAL,
+             onToggleTorch = {
+-                torchEnabled = !torchEnabled
+-                camera?.cameraControl?.enableTorch(torchEnabled)
++                val next = !torchEnabled
++                camera?.cameraControl?.enableTorch(next)
++                torchEnabled = next
+             },
+-            onSnapshot = viewModel::saveSnapshot,
+             onSwitchCamera = {
+-                cameraFacing = if (cameraFacing == CameraFacing.BACK) {
+-                    CameraFacing.FRONT
+-                } else {
+-                    CameraFacing.BACK
++                cameraSource = when (cameraSource) {
++                    CameraSource.BACK -> CameraSource.FRONT
++                    CameraSource.FRONT -> CameraSource.BACK
++                    CameraSource.EXTERNAL -> CameraSource.BACK
+                 }
+             },
++            onEndoscope = selectEndoscope,
++            modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
++        )
++
++        CameraBottomControls(
++            analysisEnabled = analysisEnabled,
++            soundMuted = soundMuted,
++            zoomRatio = zoomRatio,
++            maxZoomRatio = maxZoomRatio,
++            onSelectZoom = { requested ->
++                val target = requested.coerceIn(minZoomRatio, maxZoomRatio)
++                camera?.cameraControl?.setZoomRatio(target)
++                zoomRatio = target
++            },
++            onToggleAnalysis = { viewModel.setAnalysisEnabled(!analysisEnabled) },
++            onToggleSound = viewModel::toggleSoundMuted,
++            onSnapshot = viewModel::saveSnapshot,
+             modifier = Modifier.align(Alignment.BottomCenter),
+         )
+     }
+@@ -281,6 +512,9 @@
+     showFps: Boolean,
+     cameraBindError: String?,
+     analysisEnabled: Boolean,
++    sourceName: String,
++    sourceMessage: String?,
++    zoomRatio: Float,
+     onBack: () -> Unit,
+     modifier: Modifier = Modifier,
+ ) {
+@@ -290,7 +524,7 @@
+         modifier = modifier
+             .fillMaxWidth()
+             .statusBarsPadding()
+-            .background(Color(0xCC080D12))
++            .background(Color(0xB3080D12))
+             .padding(horizontal = 10.dp, vertical = 6.dp),
+     ) {
+         Row(verticalAlignment = Alignment.CenterVertically) {
+@@ -315,12 +549,12 @@
+                     },
+                 )
+                 Text(
+-                    if (analysisEnabled) "Анализ включён" else "Анализ остановлен",
++                    "$sourceName • ${"%.1f".format(zoomRatio)}× • " +
++                        if (analysisEnabled) "анализ включён" else "анализ остановлен",
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 )
+-                frame.modelMessage?.let { message ->
+-                    Text(message, color = MaterialTheme.colorScheme.secondary)
+-                }
++                sourceMessage?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
++                frame.modelMessage?.let { Text(it, color = MaterialTheme.colorScheme.secondary) }
+             }
+             if (showFps) {
+                 Text("${"%.1f".format(frame.fps)} FPS\n${frame.inferenceMs} мс")
+@@ -339,51 +573,146 @@
+ }
+ 
+ @Composable
+-private fun CameraControls(
+-    analysisEnabled: Boolean,
+-    soundMuted: Boolean,
++private fun CameraSideControls(
+     torchEnabled: Boolean,
+     hasFlash: Boolean,
+     canSwitchCamera: Boolean,
+-    onToggleAnalysis: () -> Unit,
+-    onToggleSound: () -> Unit,
++    endoscopeSelected: Boolean,
+     onToggleTorch: () -> Unit,
+-    onSnapshot: () -> Unit,
+     onSwitchCamera: () -> Unit,
++    onEndoscope: () -> Unit,
+     modifier: Modifier = Modifier,
+ ) {
+-    Row(
+-        modifier = modifier
+-            .fillMaxWidth()
+-            .background(Color(0xCC080D12))
+-            .padding(8.dp),
+-        horizontalArrangement = Arrangement.SpaceEvenly,
+-        verticalAlignment = Alignment.CenterVertically,
++    Column(
++        modifier = modifier,
++        verticalArrangement = Arrangement.spacedBy(10.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
+     ) {
+-        IconButton(onClick = onToggleAnalysis) {
+-            Icon(
+-                if (analysisEnabled) Icons.Default.Pause else Icons.Default.PlayArrow,
+-                contentDescription = if (analysisEnabled) "Остановить анализ" else "Запустить анализ",
+-            )
+-        }
+-        IconButton(onClick = onToggleSound) {
+-            Icon(
+-                if (soundMuted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+-                contentDescription = "Звук",
+-            )
+-        }
+-        IconButton(onClick = onToggleTorch, enabled = hasFlash) {
++        GlassIconButton(onClick = onToggleTorch, enabled = hasFlash) {
+             Icon(
+                 if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                 contentDescription = "Фонарик",
+             )
+         }
+-        IconButton(onClick = onSnapshot) {
+-            Icon(Icons.Default.PhotoCamera, contentDescription = "Снимок")
+-        }
+-        IconButton(onClick = onSwitchCamera, enabled = canSwitchCamera) {
++        GlassIconButton(onClick = onSwitchCamera, enabled = canSwitchCamera) {
+             Icon(Icons.Default.Cameraswitch, contentDescription = "Сменить камеру")
+         }
++        GlassIconButton(onClick = onEndoscope, selected = endoscopeSelected) {
++            Icon(Icons.Default.Usb, contentDescription = "Эндоскоп")
++        }
++    }
++}
++
++@Composable
++private fun CameraBottomControls(
++    analysisEnabled: Boolean,
++    soundMuted: Boolean,
++    zoomRatio: Float,
++    maxZoomRatio: Float,
++    onSelectZoom: (Float) -> Unit,
++    onToggleAnalysis: () -> Unit,
++    onToggleSound: () -> Unit,
++    onSnapshot: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    Column(
++        modifier = modifier.navigationBarsPadding().padding(bottom = 10.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.spacedBy(10.dp),
++    ) {
++        Surface(
++            color = Color(0x9E11161B),
++            shape = RoundedCornerShape(22.dp),
++        ) {
++            Row(
++                modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
++                horizontalArrangement = Arrangement.spacedBy(4.dp),
++            ) {
++                listOf(1f, 2f, 3f).forEach { value ->
++                    ZoomButton(
++                        value = value,
++                        selected = kotlin.math.abs(zoomRatio - value) < 0.15f,
++                        enabled = maxZoomRatio + 0.01f >= value,
++                        onClick = { onSelectZoom(value) },
++                    )
++                }
++            }
++        }
++
++        Surface(
++            color = Color(0x9E11161B),
++            shape = RoundedCornerShape(28.dp),
++        ) {
++            Row(
++                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
++                horizontalArrangement = Arrangement.spacedBy(12.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                GlassIconButton(onClick = onToggleAnalysis) {
++                    Icon(
++                        if (analysisEnabled) Icons.Default.Pause else Icons.Default.PlayArrow,
