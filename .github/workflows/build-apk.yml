@@ -1,11 +1,11 @@
-name: Build defect detector APK
+name: Build Defectoscope AI repair APK
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/build-apk.yml'
-      - 'ci_tgz/**'
+      - 'ci_full151/**'
   pull_request:
     branches: [ main ]
 
@@ -18,34 +18,24 @@ jobs:
         with:
           show-progress: false
 
-      - name: Restore Android project
+      - name: Restore complete working project
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p project
-          cat ci_tgz/tgz_*.txt > project.b64
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('project.b64')
-          chars = list(path.read_text())
-          repairs = {13952: 'i', 16176: 'i', 16599: 'i', 21231: 'U'}
-          for index, value in repairs.items():
-              chars[index] = value
-          path.write_text(''.join(chars))
-          PY
-          test "$(sha256sum project.b64 | awk '{print $1}')" = "9993d22053c36b8d98809e1b89766bccbc9d309a88842cbf82813cbafd77b575"
-          base64 --decode project.b64 > project.tar.gz
-          test "$(sha256sum project.tar.gz | awk '{print $1}')" = "ddd425eecef50e043344dc8bb4d1ade3b5607cf653875237db16a61423534a37"
-          gzip -t project.tar.gz
-          tar -xzf project.tar.gz -C project
+          cat ci_full151/full_151_*.txt > full_project.tar.xz.b64
+          test "$(sha256sum full_project.tar.xz.b64 | awk '{print $1}')" = "39722b753f5a4c15d425e2c6cbb591607a69a6ce3214e0c99de66212e8e9ee42"
+          base64 --decode full_project.tar.xz.b64 > full_project.tar.xz
+          test "$(sha256sum full_project.tar.xz | awk '{print $1}')" = "5ef6314d0e41b0ae3f3cf4c8bdd690e0c47e760046bc6f87d9939cdf6a54f826"
+          xz -t full_project.tar.xz
+          tar -xJf full_project.tar.xz -C project
           test -f project/settings.gradle.kts
-          rm -f project.tar.gz project.b64
-
-      - name: Apply dependency compatibility fix
-        shell: bash
-        run: |
-          sed -i 's/com.google.ai.edge.litert:litert:2.1.6/com.google.ai.edge.litert:litert:1.4.2/g' project/app/build.gradle.kts
-          grep -n 'litert' project/app/build.gradle.kts
+          test -f project/app/src/main/java/ru/defectdetector/transmission/ui/camera/CameraScreen.kt
+          test "$(find project/app/src/main/java -type f | wc -l)" -eq 42
+          grep -nE 'versionCode|versionName' project/app/build.gradle.kts
+          test "$(grep -c 'versionCode = 7' project/app/build.gradle.kts)" -eq 1
+          test "$(grep -c 'versionName = \"1.5.1\"' project/app/build.gradle.kts)" -eq 1
+          rm -f full_project.tar.xz full_project.tar.xz.b64
 
       - uses: actions/setup-java@v4
         with:
@@ -64,33 +54,13 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Create build-only placeholder assets
+      - name: Add build-only placeholder models
         shell: bash
         run: |
-          mkdir -p project/app/src/main/assets/models project/app/src/main/res/raw
+          mkdir -p project/app/src/main/assets/models
           printf 'PLACEHOLDER_MODEL_320' > project/app/src/main/assets/models/best_320.tflite
           printf 'PLACEHOLDER_MODEL_416' > project/app/src/main/assets/models/best_416.tflite
           printf 'PLACEHOLDER_MODEL_640' > project/app/src/main/assets/models/best_640.tflite
-          python3 - <<'PY'
-          import math, struct, wave
-          from pathlib import Path
-          root = Path('project/app/src/main/res/raw')
-          root.mkdir(parents=True, exist_ok=True)
-          def tone(name, pattern):
-              rate = 22050
-              samples=[]
-              for freq,dur,amp in pattern:
-                  n=int(rate*dur)
-                  for i in range(n):
-                      v=0 if freq==0 else int(32767*amp*math.sin(2*math.pi*freq*i/rate))
-                      samples.append(v)
-              with wave.open(str(root/name),'wb') as w:
-                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-                  w.writeframes(b''.join(struct.pack('<h',x) for x in samples))
-          tone('short_beep.wav', [(880,.14,.45)])
-          tone('double_alarm.wav', [(1050,.13,.55),(0,.08,0),(1050,.13,.55)])
-          tone('sharp_alarm.wav', [(1350,.18,.65),(0,.06,0),(1350,.18,.65)])
-          PY
 
       - name: Build debug APK
         working-directory: project
@@ -103,27 +73,31 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-build-log
+          name: repair-gradle-build-log
           if-no-files-found: error
           path: gradle-build.log
 
-      - name: Collect signing tools
+      - name: Collect verification tools
         shell: bash
         run: |
           mkdir -p signing-tools
           cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
           cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt2" signing-tools/
           LIBCPP="$(find "$ANDROID_HOME/build-tools/35.0.0" -name 'libc++.so*' | head -n 1)"
           test -n "$LIBCPP"
           cp "$LIBCPP" signing-tools/libc++.so
-          chmod +x signing-tools/zipalign
+          chmod +x signing-tools/zipalign signing-tools/aapt signing-tools/aapt2
 
       - uses: actions/upload-artifact@v4
         with:
-          name: defect-detector-shell-and-signing-tools
+          name: defectoscope-repair-shell-and-tools
           if-no-files-found: error
           path: |
             project/app/build/outputs/apk/debug/app-debug.apk
             signing-tools/apksigner.jar
             signing-tools/zipalign
+            signing-tools/aapt
+            signing-tools/aapt2
             signing-tools/libc++.so
