@@ -5,6 +5,8 @@ on:
     branches: [ agent/build-technostrazh-1-5-3 ]
     paths:
       - '.github/workflows/export-android-build-env.yml'
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
