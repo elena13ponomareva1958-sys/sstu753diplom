@@ -1,0 +1,115 @@
+name: Export Android build environment
+
+on:
+  push:
+    branches: [ agent/build-technostrazh-1-5-3 ]
+    paths:
+      - '.github/workflows/export-android-build-env.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          show-progress: false
+
+      - name: Restore verified 1.5.2 project
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat \
+            ci_152/src_00.txt \
+            ci_152/src_01.txt \
+            ci_152/seg_020.txt \
+            ci_152/seg_021.txt \
+            ci_152/seg_022.txt \
+            ci_152/src_03.txt \
+            ci_152/seg_040.txt \
+            ci_152/seg_041.txt \
+            ci_152/seg_042.txt \
+            ci_152/seg_0500.txt \
+            ci_152/seg_0501.txt \
+            ci_152/seg_051.txt \
+            ci_152/seg_052.txt > project.tar.xz.b64
+          test "$(wc -c < project.tar.xz.b64)" -eq 51820
+          test "$(sha256sum project.tar.xz.b64 | awk '{print $1}')" = "91536ac31216447f8810f9ffe12d7654e14de588a393b21ef7482f185fdd3702"
+          base64 --decode project.tar.xz.b64 > project.tar.xz
+          test "$(sha256sum project.tar.xz | awk '{print $1}')" = "53b7295e65e984305fe738f106881d07cbaee64720a98525c31611cc0bd70fea"
+          mkdir -p project
+          tar -xJf project.tar.xz -C project
+          mkdir -p project/app/src/main/assets/models project/app/src/main/res/raw project/app/src/main/res/drawable
+          base64 --decode ci_152/about_wheelset_micro.b64 > project/app/src/main/res/drawable/about_wheelset.webp
+          printf 'PLACEHOLDER_MODEL_320' > project/app/src/main/assets/models/best_320.tflite
+          printf 'PLACEHOLDER_MODEL_416' > project/app/src/main/assets/models/best_416.tflite
+          printf 'PLACEHOLDER_MODEL_640' > project/app/src/main/assets/models/best_640.tflite
+          python3 - <<'PY'
+          import math, struct, wave
+          from pathlib import Path
+          root = Path('project/app/src/main/res/raw')
+          def tone(name, pattern):
+              rate = 22050
+              samples = []
+              for freq, dur, amp in pattern:
+                  for index in range(int(rate * dur)):
+                      samples.append(0 if freq == 0 else int(32767 * amp * math.sin(2 * math.pi * freq * index / rate)))
+              with wave.open(str(root / name), 'wb') as output:
+                  output.setnchannels(1); output.setsampwidth(2); output.setframerate(rate)
+                  output.writeframes(b''.join(struct.pack('<h', value) for value in samples))
+          tone('short_beep.wav', [(880, .14, .45)])
+          tone('double_alarm.wav', [(1050, .13, .55), (0, .08, 0), (1050, .13, .55)])
+          tone('sharp_alarm.wav', [(1350, .18, .65), (0, .06, 0), (1350, .18, .65)])
+          PY
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'platform-tools'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Populate Gradle dependency cache
+        working-directory: project
+        shell: bash
+        run: gradle --no-daemon assembleDebug --stacktrace
+
+      - name: Pack offline build environment
+        shell: bash
+        run: |
+          set -euxo pipefail
+          GRADLE_BIN="$(readlink -f "$(command -v gradle)")"
+          GRADLE_ROOT="$(cd "$(dirname "$GRADLE_BIN")/.." && pwd)"
+          mkdir -p export/android-sdk/platforms export/android-sdk/build-tools export/gradle-user-home
+          cp -a "$GRADLE_ROOT" export/gradle
+          cp -a "$ANDROID_HOME/platforms/android-36" export/android-sdk/platforms/
+          cp -a "$ANDROID_HOME/build-tools/35.0.0" export/android-sdk/build-tools/
+          cp -a "$ANDROID_HOME/platform-tools" export/android-sdk/
+          cp -a "$HOME/.gradle/caches" export/gradle-user-home/
+          cp -a "$HOME/.gradle/native" export/gradle-user-home/ 2>/dev/null || true
+          printf '%s\n' "$GRADLE_ROOT" > export/original-gradle-root.txt
+          printf '%s\n' "$ANDROID_HOME" > export/original-android-home.txt
+          du -sh export/*
+          tar --zstd -cf android-offline-build-env.tar.zst export
+          sha256sum android-offline-build-env.tar.zst > android-offline-build-env.sha256
+          ls -lh android-offline-build-env.tar.zst
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-offline-build-env
+          path: |
+            android-offline-build-env.tar.zst
+            android-offline-build-env.sha256
+          compression-level: 0
+          if-no-files-found: error
