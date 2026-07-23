@@ -1,0 +1,1 @@
+Build-only patch for ТЕХНОСТРАЖ AI 1.5.3. Real trained models and signing key are not stored in this branch.
