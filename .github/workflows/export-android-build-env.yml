@@ -87,7 +87,7 @@ jobs:
         shell: bash
         run: gradle --no-daemon assembleDebug --stacktrace
 
-      - name: Pack offline build environment
+      - name: Pack and split offline build environment
         shell: bash
         run: |
           set -euxo pipefail
@@ -105,13 +105,39 @@ jobs:
           du -sh export/*
           tar --zstd -cf android-offline-build-env.tar.zst export
           sha256sum android-offline-build-env.tar.zst > android-offline-build-env.sha256
-          ls -lh android-offline-build-env.tar.zst
+          split -b 300M -d -a 2 android-offline-build-env.tar.zst android-env-part-
+          test -f android-env-part-00
+          test -f android-env-part-01
+          test -f android-env-part-02
+          sha256sum android-env-part-* > android-env-parts.sha256
+          ls -lh android-env-part-* android-offline-build-env.sha256 android-env-parts.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: android-offline-build-env
+          name: android-offline-build-env-part-00
+          path: android-env-part-00
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-offline-build-env-part-01
+          path: android-env-part-01
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-offline-build-env-part-02
+          path: android-env-part-02
+          compression-level: 0
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-offline-build-env-checksums
           path: |
-            android-offline-build-env.tar.zst
             android-offline-build-env.sha256
+            android-env-parts.sha256
           compression-level: 0
           if-no-files-found: error
