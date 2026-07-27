@@ -1,0 +1,21 @@
+name: Technostrazh toolchain smoke
+
+on:
+  push:
+    branches: [ technostrazh-build-tools ]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create probe artifact
+        run: |
+          mkdir -p artifact
+          printf 'technostrazh-toolchain-ok\n' > artifact/probe.txt
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-toolchain-probe
+          path: artifact/probe.txt
+          retention-days: 1
