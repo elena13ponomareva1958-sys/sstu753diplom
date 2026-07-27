@@ -3,6 +3,8 @@ name: Technostrazh toolchain smoke
 on:
   push:
     branches: [ technostrazh-build-tools ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
