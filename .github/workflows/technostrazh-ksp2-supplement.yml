@@ -1,0 +1,207 @@
+name: Technostrazh KSP2 supplement
+
+on:
+  push:
+    branches: [ technostrazh-build-tools ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  ksp2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Create Room schema probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/ksp2-probe"
+          mkdir -p "$P/app/src/main/java/probe/ksp2"
+          mkdir -p "$P/app/src/main/res/values"
+          mkdir -p "$P/app/schemas/probe.ksp2.ProbeDatabase"
+
+          cat > "$P/settings.gradle.kts" <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Ksp2RoomProbe"
+          include(":app")
+          EOF
+
+          cat > "$P/build.gradle.kts" <<'EOF'
+          plugins {
+              id("com.android.application") version "8.10.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.1.20" apply false
+              id("com.google.devtools.ksp") version "2.1.20-1.0.32" apply false
+          }
+          EOF
+
+          cat > "$P/gradle.properties" <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          ksp.useKSP2=true
+          EOF
+
+          cat > "$P/app/build.gradle.kts" <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("com.google.devtools.ksp")
+          }
+          android {
+              namespace = "probe.ksp2"
+              compileSdk = 36
+              defaultConfig {
+                  applicationId = "probe.ksp2"
+                  minSdk = 26
+                  targetSdk = 36
+                  versionCode = 1
+                  versionName = "1"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          ksp { arg("room.schemaLocation", "$projectDir/schemas") }
+          dependencies {
+              val room = "2.8.4"
+              implementation("androidx.room:room-runtime:$room")
+              implementation("androidx.room:room-ktx:$room")
+              ksp("androidx.room:room-compiler:$room")
+          }
+          EOF
+
+          cat > "$P/app/src/main/AndroidManifest.xml" <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:theme="@style/AppTheme" />
+          </manifest>
+          EOF
+
+          cat > "$P/app/src/main/res/values/styles.xml" <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar" />
+          </resources>
+          EOF
+
+          cat > "$P/app/src/main/java/probe/ksp2/Database.kt" <<'EOF'
+          package probe.ksp2
+
+          import androidx.room.Database
+          import androidx.room.Entity
+          import androidx.room.PrimaryKey
+          import androidx.room.RoomDatabase
+
+          @Entity(tableName = "detections")
+          data class DetectionEntity(
+              @PrimaryKey(autoGenerate = true) val id: Long = 0,
+              val createdAt: Long,
+              val classId: Int,
+          )
+
+          @Database(entities = [DetectionEntity::class], version = 1, exportSchema = true)
+          abstract class ProbeDatabase : RoomDatabase()
+          EOF
+
+          cat > "$P/app/schemas/probe.ksp2.ProbeDatabase/1.json" <<'EOF'
+          {
+            "formatVersion": 1,
+            "database": {
+              "version": 1,
+              "identityHash": "b2eeea3d3df4d65da011bc5f63547137",
+              "entities": [
+                {
+                  "tableName": "detections",
+                  "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `createdAt` INTEGER NOT NULL, `classId` INTEGER NOT NULL)",
+                  "fields": [
+                    {"fieldPath":"id","columnName":"id","affinity":"INTEGER","notNull":true},
+                    {"fieldPath":"createdAt","columnName":"createdAt","affinity":"INTEGER","notNull":true},
+                    {"fieldPath":"classId","columnName":"classId","affinity":"INTEGER","notNull":true}
+                  ],
+                  "primaryKey": {"autoGenerate":true,"columnNames":["id"]},
+                  "indices": [],
+                  "foreignKeys": []
+                }
+              ],
+              "views": [],
+              "setupQueries": [
+                "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+                "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b2eeea3d3df4d65da011bc5f63547137')"
+              ]
+            }
+          }
+          EOF
+
+      - name: Verify KSP2 can read an existing Room schema
+        shell: bash
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/ksp2-gradle-home
+        run: |
+          set -euo pipefail
+          gradle -p "$RUNNER_TEMP/ksp2-probe" --no-daemon clean :app:kspDebugKotlin --stacktrace
+
+      - name: Build local Maven supplement
+        shell: bash
+        env:
+          GRADLE_USER_HOME: ${{ runner.temp }}/ksp2-gradle-home
+        run: |
+          set -euo pipefail
+          SRC="$GRADLE_USER_HOME/caches/modules-2/files-2.1"
+          REPO="$RUNNER_TEMP/ksp2-maven"
+          mkdir -p "$REPO"
+
+          copy_module() {
+            group="$1"; module="$2"; version="$3"
+            src="$SRC/$group/$module/$version"
+            dst="$REPO/${group//.//}/$module/$version"
+            mkdir -p "$dst"
+            find "$src" -type f \( -name '*.jar' -o -name '*.pom' -o -name '*.module' \) -exec cp '{}' "$dst/" ';'
+            for file in "$dst"/*; do
+              base="$(basename "$file")"
+              case "$base" in
+                *.jar) cp "$file" "$dst/$module-$version.jar" ;;
+                *.pom) cp "$file" "$dst/$module-$version.pom" ;;
+                *.module) cp "$file" "$dst/$module-$version.module" ;;
+              esac
+            done
+          }
+
+          copy_module com.google.devtools.ksp symbol-processing-aa-embeddable 2.1.20-1.0.32
+          copy_module org.jetbrains.kotlinx kotlinx-coroutines-core-jvm 1.6.4
+
+          mkdir -p artifact
+          tar --zstd -cf artifact/technostrazh-ksp2-offline-maven.tar.zst -C "$REPO" .
+          sha256sum artifact/technostrazh-ksp2-offline-maven.tar.zst \
+            > artifact/technostrazh-ksp2-offline-maven.tar.zst.sha256
+          find "$REPO" -type f -printf '%P %s bytes\n' | sort > artifact/CONTENTS.txt
+          ls -lh artifact
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-ksp2-offline-supplement
+          path: artifact/
+          compression-level: 0
+          retention-days: 1
