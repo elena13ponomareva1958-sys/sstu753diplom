@@ -25,7 +25,8 @@ jobs:
         run: |
           set -euo pipefail
           cd source-artifact
-          sha256sum -c technostrazh-android-offline-toolchain.tar.zst.sha256
+          sed 's#artifact/##' technostrazh-android-offline-toolchain.tar.zst.sha256 \
+            | sha256sum -c -
           mkdir -p ../parts
           split -b 400M -d -a 2 \
             technostrazh-android-offline-toolchain.tar.zst \
@@ -33,8 +34,8 @@ jobs:
           test "$(find ../parts -type f | wc -l)" -eq 3
           sha256sum ../parts/technostrazh-toolchain.part-* \
             > ../parts/PARTS_SHA256.txt
-          cp technostrazh-android-offline-toolchain.tar.zst.sha256 \
-            ../parts/FULL_ARCHIVE_SHA256.txt
+          sed 's#artifact/##' technostrazh-android-offline-toolchain.tar.zst.sha256 \
+            > ../parts/FULL_ARCHIVE_SHA256.txt
           ls -lh ../parts
 
       - name: Upload part 00
