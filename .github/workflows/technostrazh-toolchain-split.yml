@@ -1,0 +1,66 @@
+name: Split Technostrazh offline toolchain
+
+on:
+  push:
+    branches: [ technostrazh-build-tools ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download completed toolchain artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: technostrazh-android-offline-toolchain-v2
+          path: source-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 30238406712
+
+      - name: Verify and split archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd source-artifact
+          sed 's#artifact/##' technostrazh-android-offline-toolchain.tar.zst.sha256 \
+            | sha256sum -c -
+          mkdir -p ../parts
+          split -b 400M -d -a 2 \
+            technostrazh-android-offline-toolchain.tar.zst \
+            ../parts/technostrazh-toolchain.part-
+          test "$(find ../parts -type f | wc -l)" -eq 3
+          sha256sum ../parts/technostrazh-toolchain.part-* \
+            > ../parts/PARTS_SHA256.txt
+          sed 's#artifact/##' technostrazh-android-offline-toolchain.tar.zst.sha256 \
+            > ../parts/FULL_ARCHIVE_SHA256.txt
+          ls -lh ../parts
+
+      - name: Upload part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-toolchain-part-00
+          path: |
+            parts/technostrazh-toolchain.part-00
+            parts/PARTS_SHA256.txt
+            parts/FULL_ARCHIVE_SHA256.txt
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-toolchain-part-01
+          path: parts/technostrazh-toolchain.part-01
+          compression-level: 0
+          retention-days: 1
+
+      - name: Upload part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-toolchain-part-02
+          path: parts/technostrazh-toolchain.part-02
+          compression-level: 0
+          retention-days: 1

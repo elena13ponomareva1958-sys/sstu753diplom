@@ -1,0 +1,54 @@
+name: Export Technostrazh KSP2 Maven supplement
+
+on:
+  push:
+    branches: [ technostrazh-build-tools ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download exact KSP2 dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="$RUNNER_TEMP/maven"
+          BASE='https://repo.maven.apache.org/maven2'
+
+          fetch_module() {
+            group_path="$1"; module="$2"; version="$3"
+            dst="$REPO/$group_path/$module/$version"
+            mkdir -p "$dst"
+            for ext in jar pom; do
+              file="$module-$version.$ext"
+              curl -fL --retry 5 --retry-delay 2 \
+                "$BASE/$group_path/$module/$version/$file" \
+                -o "$dst/$file"
+            done
+            module_file="$module-$version.module"
+            curl -fL --retry 3 \
+              "$BASE/$group_path/$module/$version/$module_file" \
+              -o "$dst/$module_file" || rm -f "$dst/$module_file"
+          }
+
+          fetch_module com/google/devtools/ksp symbol-processing-aa-embeddable 2.1.20-1.0.32
+          fetch_module org/jetbrains/kotlinx kotlinx-coroutines-core-jvm 1.6.4
+
+          mkdir -p artifact
+          tar --zstd -cf artifact/technostrazh-ksp2-offline-maven.tar.zst -C "$REPO" .
+          sha256sum artifact/technostrazh-ksp2-offline-maven.tar.zst \
+            > artifact/technostrazh-ksp2-offline-maven.tar.zst.sha256
+          find "$REPO" -type f -printf '%P %s bytes\n' | sort > artifact/CONTENTS.txt
+          cat artifact/CONTENTS.txt
+          ls -lh artifact
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-ksp2-offline-maven
+          path: artifact/
+          compression-level: 0
+          retention-days: 1
