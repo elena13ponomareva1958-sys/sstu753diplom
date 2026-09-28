@@ -108,11 +108,11 @@ jobs:
           printf 'package example\nclass Warm\n' > /tmp/warm/app/src/main/java/example/Warm.kt
           cd /tmp/warm
           /tmp/tz-toolchain/gradle-8.11.1/bin/gradle --no-daemon assembleDebug
-      - name: Pack reusable offline toolchain
+      - name: Pack and split reusable offline toolchain
         if: always()
         shell: bash
         run: |
-          mkdir -p /tmp/export/android-sdk/platforms /tmp/export/android-sdk/build-tools /tmp/export/android-sdk/platform-tools /tmp/export/gradle /tmp/export/gradle-home /tmp/export/jdk
+          mkdir -p /tmp/export/android-sdk/platforms /tmp/export/android-sdk/build-tools /tmp/export/android-sdk/platform-tools /tmp/export/gradle /tmp/export/gradle-home /tmp/export/jdk /tmp/chunks
           cp -a "$ANDROID_SDK_ROOT/platforms/android-36" /tmp/export/android-sdk/platforms/
           cp -a "$ANDROID_SDK_ROOT/build-tools/36.0.0" /tmp/export/android-sdk/build-tools/
           cp -a "$ANDROID_SDK_ROOT/platform-tools"/. /tmp/export/android-sdk/platform-tools/
@@ -121,13 +121,32 @@ jobs:
           cp -a "$JAVA_HOME"/. /tmp/export/jdk/
           tar -I 'zstd -8 -T0' -cf /tmp/technostrazh-toolchain.tar.zst -C /tmp/export .
           sha256sum /tmp/technostrazh-toolchain.tar.zst > /tmp/technostrazh-toolchain.sha256
-          du -h /tmp/technostrazh-toolchain.tar.zst
-      - uses: actions/upload-artifact@v4
+          split -b 330M -d -a 2 /tmp/technostrazh-toolchain.tar.zst /tmp/chunks/toolchain.part-
+          cp /tmp/technostrazh-toolchain.sha256 /tmp/chunks/
+          ls -lh /tmp/chunks
+      - name: Upload toolchain part 00
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: technostrazh-offline-toolchain-v2
+          name: technostrazh-toolchain-part-00
+          path: /tmp/chunks/toolchain.part-00
+          compression-level: 0
+          retention-days: 1
+      - name: Upload toolchain part 01
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-toolchain-part-01
+          path: /tmp/chunks/toolchain.part-01
+          compression-level: 0
+          retention-days: 1
+      - name: Upload toolchain part 02
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: technostrazh-toolchain-part-02
           path: |
-            /tmp/technostrazh-toolchain.tar.zst
-            /tmp/technostrazh-toolchain.sha256
+            /tmp/chunks/toolchain.part-02
+            /tmp/chunks/technostrazh-toolchain.sha256
           compression-level: 0
           retention-days: 1
