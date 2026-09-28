@@ -31,7 +31,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p /tmp/warm/app/src/main/java/example
-          printf 'android.useAndroidX=true\nkotlin.code.style=official\n' > /tmp/warm/gradle.properties
+          printf 'android.useAndroidX=true\nkotlin.code.style=official\norg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8\n' > /tmp/warm/gradle.properties
           cat > /tmp/warm/settings.gradle.kts <<'EOF'
           pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
           dependencyResolutionManagement {
@@ -109,18 +109,21 @@ jobs:
           cd /tmp/warm
           /tmp/tz-toolchain/gradle-8.11.1/bin/gradle --no-daemon assembleDebug
       - name: Pack reusable offline toolchain
+        if: always()
         shell: bash
         run: |
-          mkdir -p /tmp/export/android-sdk/platforms /tmp/export/android-sdk/build-tools /tmp/export/android-sdk/platform-tools /tmp/export/gradle /tmp/export/gradle-home
+          mkdir -p /tmp/export/android-sdk/platforms /tmp/export/android-sdk/build-tools /tmp/export/android-sdk/platform-tools /tmp/export/gradle /tmp/export/gradle-home /tmp/export/jdk
           cp -a "$ANDROID_SDK_ROOT/platforms/android-36" /tmp/export/android-sdk/platforms/
           cp -a "$ANDROID_SDK_ROOT/build-tools/36.0.0" /tmp/export/android-sdk/build-tools/
           cp -a "$ANDROID_SDK_ROOT/platform-tools"/. /tmp/export/android-sdk/platform-tools/
           cp -a /tmp/tz-toolchain/gradle-8.11.1 /tmp/export/gradle/
           cp -a "$HOME/.gradle/caches" /tmp/export/gradle-home/
+          cp -a "$JAVA_HOME"/. /tmp/export/jdk/
           tar -I 'zstd -8 -T0' -cf /tmp/technostrazh-toolchain.tar.zst -C /tmp/export .
           sha256sum /tmp/technostrazh-toolchain.tar.zst > /tmp/technostrazh-toolchain.sha256
           du -h /tmp/technostrazh-toolchain.tar.zst
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: technostrazh-offline-toolchain-v2
           path: |
