@@ -1,0 +1,41 @@
+name: Inspect v42 base project
+
+on:
+  push:
+    branches: [ technostrazh-v42-build ]
+    paths:
+      - '.github/workflows/inspect-v42-base.yml'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore Android project
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p project
+          cat ci_tgz/tgz_*.txt > project.b64
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('project.b64')
+          chars = list(path.read_text())
+          repairs = {13952: 'i', 16176: 'i', 16599: 'i', 21231: 'U'}
+          for index, value in repairs.items():
+              chars[index] = value
+          path.write_text(''.join(chars))
+          PY
+          test "$(sha256sum project.b64 | awk '{print $1}')" = "9993d22053c36b8d98809e1b89766bccbc9d309a88842cbf82813cbafd77b575"
+          base64 --decode project.b64 > project.tar.gz
+          test "$(sha256sum project.tar.gz | awk '{print $1}')" = "ddd425eecef50e043344dc8bb4d1ade3b5607cf653875237db16a61423534a37"
+          gzip -t project.tar.gz
+          tar -xzf project.tar.gz -C project
+          tar -czf restored-project.tar.gz -C project .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restored-v42-base-project
+          if-no-files-found: error
+          path: restored-project.tar.gz
