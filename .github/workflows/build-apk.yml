@@ -5,7 +5,7 @@ on:
   push:
     paths:
       - '.github/workflows/build-apk.yml'
-      - 'v42_source.tar.xz'
+      - 'v42_src/**'
 
 jobs:
   build:
@@ -16,14 +16,19 @@ jobs:
         with:
           show-progress: false
 
-      - name: Restore valid v42 source archive
+      - name: Restore v42 source from gzip chunks
         shell: bash
         run: |
           set -euxo pipefail
-          sha256sum v42_source.tar.xz
-          xz -t v42_source.tar.xz
-          mkdir project
-          tar -xJf v42_source.tar.xz -C project
+          cat v42_src/src_*.txt > source.b64
+          base64 --decode source.b64 > source.tgz
+          gzip -t source.tgz
+          mkdir restored
+          tar -xzf source.tgz -C restored
+          SETTINGS="$(find restored -name settings.gradle.kts -print -quit)"
+          test -n "$SETTINGS"
+          PROJ="$(dirname "$SETTINGS")"
+          mv "$PROJ" project
           test -f project/settings.gradle.kts
           test -f project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
           grep -n 'versionCode = 42' project/app/build.gradle.kts
