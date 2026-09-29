@@ -5,7 +5,7 @@ on:
   push:
     paths:
       - '.github/workflows/build-apk.yml'
-      - 'ci_tgz/**'
+      - 'v42_source.tar.xz'
 
 jobs:
   build:
@@ -16,27 +16,21 @@ jobs:
         with:
           show-progress: false
 
-      - name: Restore v42 source from CI archive
+      - name: Restore valid v42 source archive
         shell: bash
         run: |
           set -euxo pipefail
-          cat ci_tgz/tgz_*.txt > source.b64
-          base64 --decode source.b64 > source.tgz
-          gzip -t source.tgz
-          mkdir restored
-          tar -xzf source.tgz -C restored
-          SETTINGS="$(find restored -name settings.gradle.kts -print -quit)"
-          test -n "$SETTINGS"
-          PROJ="$(dirname "$SETTINGS")"
-          ln -s "$PROJ" project
+          test "$(sha256sum v42_source.tar.xz | awk '{print $1}')" = "03825df5300d37e002dc7ca8cbc805d14fba872086bf08be95470e619fd208ef"
+          xz -t v42_source.tar.xz
+          mkdir project
+          tar -xJf v42_source.tar.xz -C project
           test -f project/settings.gradle.kts
           test -f project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
           grep -n 'versionCode = 42' project/app/build.gradle.kts
           grep -n 'versionName = "1.6.0"' project/app/build.gradle.kts
           grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
-          sha256sum source.b64 source.tgz
 
-      - name: Restore exact UVC camera AAR
+      - name: Restore UVC camera AAR
         shell: bash
         run: |
           set -euxo pipefail
@@ -58,9 +52,10 @@ jobs:
           import base64, math, struct, wave
           from pathlib import Path
           png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
+          webp = base64.b64decode('UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v02aAA=')
           drawable = Path('project/app/src/main/res/drawable')
           for name in ['about_wheelset','home_workshop_bg','home_workshop_bg_v2','home_workshop_bg_v3','home_workshop_bright_164','home_workshop_user_exact_163']:
-              (drawable / f'{name}.png').write_bytes(png)
+              (drawable / f'{name}.webp').write_bytes(webp)
           Path('project/app/src/main/res/drawable-nodpi/ic_launcher_foreground_image.png').write_bytes(png)
           root = Path('project/app/src/main/res/raw')
           def tone(name, pattern):
