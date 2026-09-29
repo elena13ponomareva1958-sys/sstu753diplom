@@ -1,0 +1,442 @@
+--- a/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
++++ b/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
+@@ -1,7 +1,15 @@
+ package ru.defectdetector.transmission.camera
+ 
+ import android.content.Context
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Paint
++import android.graphics.Rect
+ import android.graphics.SurfaceTexture
++import android.hardware.usb.UsbDeviceConnection
++import android.hardware.usb.UsbEndpoint
++import android.hardware.usb.UsbInterface
++import android.view.Surface
+ import android.hardware.usb.UsbConstants
+ import android.hardware.usb.UsbDevice
+ import android.util.Log
+@@ -13,6 +21,8 @@
+ import com.serenegiant.usb.USBMonitor
+ import com.serenegiant.usb.UVCCamera
+ import java.io.Closeable
++import java.nio.ByteBuffer
++import java.util.concurrent.atomic.AtomicBoolean
+ import kotlin.math.abs
+ 
+ /** A preview mode advertised by the connected UVC camera. */
+@@ -63,6 +73,26 @@
+     private var availableResolutions: List<UvcResolution> = emptyList()
+     private var previewStarted = false
+ 
++    // Raw vendor-protocol path for Geek szitman / UseeePlus Mobile port (2CE3:3828).
++    @Volatile private var superReaderRunning = false
++    private val superStopRequested = AtomicBoolean(false)
++    private var superReaderThread: Thread? = null
++    private var superCtrlBlock: USBMonitor.UsbControlBlock? = null
++    private var superConnection: UsbDeviceConnection? = null
++    private var superInterface: UsbInterface? = null
++    private var superVideoIn: UsbEndpoint? = null
++    private var superSurface: Surface? = null
++    private var superFirstFrameDelivered = false
++    private var superStartNs = 0L
++    private var superReadCount = 0L
++    private var superBytesRead = 0L
++    private var superHeader511Count = 0L
++    private var superFullFrameCount = 0L
++    private var superShortReadCount = 0L
++    private var superConvertFailCount = 0L
++    private var superLastDiagNs = 0L
++    private var superLastDiagBytes = 0L
++
+     private val monitor = USBMonitor(appContext, object : USBMonitor.OnDeviceConnectListener {
+         override fun onAttach(device: UsbDevice) {
+             if (!active || !UsbEndoscopeSupport.isVideoDevice(device)) return
+@@ -79,7 +109,13 @@
+         ) {
+             if (!active || !UsbEndoscopeSupport.isVideoDevice(device)) return
+             currentDevice = device
+-            cameraHandler.post { openCamera(ctrlBlock) }
++            cameraHandler.post {
++                if (UsbEndoscopeSupport.isSuperCamera(device)) {
++                    openSuperCamera(ctrlBlock)
++                } else {
++                    openCamera(ctrlBlock)
++                }
++            }
+         }
+ 
+         override fun onDisconnect(device: UsbDevice, ctrlBlock: USBMonitor.UsbControlBlock) {
+@@ -105,9 +141,15 @@
+     fun setSurfaceTexture(texture: SurfaceTexture?) {
+         cameraHandler.post {
+             if (surfaceTexture === texture) return@post
+-            stopPreviewOnly()
++            if (!superReaderRunning) stopPreviewOnly()
++            runCatching { superSurface?.release() }
++            superSurface = null
+             surfaceTexture = texture
+-            startPreviewIfReady()
++            if (texture != null && UsbEndoscopeSupport.isSuperCamera(currentDevice)) {
++                superSurface = runCatching { Surface(texture) }.getOrNull()
++            } else {
++                startPreviewIfReady()
++            }
+         }
+     }
+ 
+@@ -137,6 +179,10 @@
+         preferredHeight = height
+         if (!active) return
+         val device = currentDevice ?: return
++        if (UsbEndoscopeSupport.isSuperCamera(device)) {
++            postStatus("Mobile-порт работает только в реальном режиме 640 × 480 YUYV")
++            return
++        }
+         postStatus("Переключение эндоскопа на $width × $height…")
+         cameraHandler.post {
+             closeCamera()
+@@ -294,6 +340,7 @@
+     }
+ 
+     private fun closeCamera() {
++        stopSuperCamera()
+         stopPreviewOnly()
+         runCatching { camera?.setFrameCallback(null, UVCCamera.PIXEL_FORMAT_RGBX) }
+         runCatching { camera?.destroy() }
+@@ -301,6 +348,327 @@
+         currentResolution = null
+     }
+ 
++
++    private fun openSuperCamera(ctrlBlock: USBMonitor.UsbControlBlock) {
++        stopSuperCamera()
++        if (!active) return
++        val device = currentDevice ?: ctrlBlock.device
++        superFirstFrameDelivered = false
++        superStartNs = System.nanoTime()
++        resetSuperDiagnostics()
++
++        try {
++            val target = findSuperVideoInterface(ctrlBlock, device)
++                ?: error("не найден IF1 alt1 com.useeplus.protocol")
++            val connection = ctrlBlock.connection
++            val claimed = runCatching {
++                ctrlBlock.claimInterface(target, true)
++                true
++            }.getOrElse { false }
++            if (!claimed) error("claim IF1 alt1 не выполнен")
++            postStatus("Mobile USB: permission OK; claim IF1 OK")
++
++            val altOk = runCatching { connection.setInterface(target) }.getOrDefault(false)
++            if (!altOk) error("не удалось выбрать IF1 alt1")
++            postStatus("Mobile USB: IF1 alt1 OK")
++
++            val videoIn = (0 until target.endpointCount)
++                .map(target::getEndpoint)
++                .firstOrNull {
++                    it.direction == UsbConstants.USB_DIR_IN &&
++                        it.type == UsbConstants.USB_ENDPOINT_XFER_BULK
++                } ?: error("на IF1 alt1 нет Bulk-IN endpoint")
++
++            val info = ByteArray(SUPER_INFO_LENGTH)
++            val infoResult = connection.controlTransfer(
++                SUPER_CLASS_DEVICE_IN,
++                0x00,
++                0x0005,
++                0x0000,
++                info,
++                info.size,
++                SUPER_CONTROL_TIMEOUT_MS,
++            )
++            val infoText = if (infoResult > 0) {
++                info.copyOf(infoResult).toString(Charsets.UTF_8).replace('\u0000', ' ').trim()
++            } else "нет ответа ($infoResult)"
++            Log.i(TAG, "SuperCamera control-IN info result=$infoResult text=$infoText")
++            postStatus("Mobile USB: control-IN=$infoResult")
++
++            val startPayload = ByteArray(64) { 0x30 }
++            val startResult = connection.controlTransfer(
++                SUPER_CLASS_DEVICE_OUT,
++                0x01,
++                0x0005,
++                0x0000,
++                startPayload,
++                startPayload.size,
++                SUPER_CONTROL_TIMEOUT_MS,
++            )
++            if (startResult != startPayload.size) {
++                error("START control-OUT: $startResult/${startPayload.size}")
++            }
++
++            superCtrlBlock = ctrlBlock
++            superConnection = connection
++            superInterface = target
++            superVideoIn = videoIn
++            val selected = UvcResolution(
++                SUPER_WIDTH,
++                SUPER_HEIGHT,
++                UVCCamera.FRAME_FORMAT_YUYV,
++                supportedFps = emptyList(),
++            )
++            currentResolution = selected
++            availableResolutions = listOf(selected)
++            postResolutions(listOf(selected), selected)
++            postStatus(
++                "Mobile USB transport запущен: IF${target.id} alt${target.alternateSetting}, " +
++                    "IN=0x%02X; ждём первый реальный кадр…".format(videoIn.address),
++            )
++            startSuperReader(selected)
++        } catch (error: Throwable) {
++            Log.e(TAG, "SuperCamera open failed", error)
++            stopSuperCamera()
++            postStatus("Прямой Mobile USB-режим не запустился: ${error.message ?: error.javaClass.simpleName}")
++        }
++    }
++
++    private fun findSuperVideoInterface(
++        ctrlBlock: USBMonitor.UsbControlBlock,
++        device: UsbDevice,
++    ): UsbInterface? {
++        for (index in 0 until device.interfaceCount) {
++            val intf = device.getInterface(index)
++            if (intf.interfaceProtocol == 1 && intf.alternateSetting == 1 && intf.endpointCount > 0) {
++                return runCatching { ctrlBlock.getInterface(intf.id, intf.alternateSetting) }.getOrElse { intf }
++            }
++        }
++        return runCatching { ctrlBlock.getInterface(1, 1) }.getOrNull()
++    }
++
++    private fun startSuperReader(resolution: UvcResolution) {
++        val connection = superConnection ?: error("USB connection missing")
++        val endpoint = superVideoIn ?: error("Bulk-IN endpoint missing")
++        superStopRequested.set(false)
++        superReaderRunning = true
++        val thread = Thread({
++            val frame = ByteArray(SUPER_FRAME_BYTES)
++            val rgba = ByteArray(SUPER_WIDTH * SUPER_HEIGHT * 4)
++            val pixels = IntArray(SUPER_WIDTH * SUPER_HEIGHT)
++            var startRetries = 0
++            try {
++                while (!superStopRequested.get() && active) {
++                    val result = runCatching {
++                        connection.bulkTransfer(endpoint, frame, frame.size, SUPER_READ_TIMEOUT_MS)
++                    }.getOrElse { error ->
++                        Log.w(TAG, "SuperCamera bulk read error", error)
++                        -1
++                    }
++                    if (result <= 0) {
++                        if (!superFirstFrameDelivered && startRetries < SUPER_START_RETRIES) {
++                            startRetries++
++                            val retryPayload = ByteArray(64) { 0x30 }
++                            val retryResult = runCatching {
++                                connection.controlTransfer(
++                                    SUPER_CLASS_DEVICE_OUT,
++                                    0x01,
++                                    0x0005,
++                                    0x0000,
++                                    retryPayload,
++                                    retryPayload.size,
++                                    SUPER_CONTROL_TIMEOUT_MS,
++                                )
++                            }.getOrDefault(-1)
++                            Log.i(TAG, "SuperCamera start retry=$startRetries result=$retryResult")
++                            postStatus("Mobile USB: нет данных, повтор START $startRetries/$SUPER_START_RETRIES = $retryResult")
++                        }
++                        maybePostSuperDiagnostics(result)
++                        continue
++                    }
++                    superReadCount++
++                    superBytesRead += result
++
++                    if (result == SUPER_STATUS_BYTES && frame[0] == 0xDD.toByte() && frame[1] == 0xCC.toByte()) {
++                        superHeader511Count++
++                        maybePostSuperDiagnostics(result)
++                        continue
++                    }
++                    if (result != SUPER_FRAME_BYTES) {
++                        superShortReadCount++
++                        Log.d(TAG, "SuperCamera short/unexpected read=$result")
++                        maybePostSuperDiagnostics(result)
++                        continue
++                    }
++
++                    superFullFrameCount++
++                    if (!convertYuyvToRgbaAndArgb(frame, rgba, pixels)) {
++                        superConvertFailCount++
++                        maybePostSuperDiagnostics(result)
++                        continue
++                    }
++
++                    drawSuperPreview(pixels)
++                    onFrame(ByteBuffer.wrap(rgba), SUPER_WIDTH, SUPER_HEIGHT)
++
++                    if (!superFirstFrameDelivered) {
++                        superFirstFrameDelivered = true
++                        val firstMs = (System.nanoTime() - superStartNs) / 1_000_000L
++                        mainHandler.post {
++                            onConnected(resolution)
++                            onStatus(
++                                "Эндоскоп работает: Mobile USB 640 × 480 YUYV; " +
++                                    "первый кадр ${firstMs} мс, IN=0x%02X".format(endpoint.address),
++                            )
++                        }
++                    }
++                    maybePostSuperDiagnostics(result)
++                }
++            } finally {
++                superReaderRunning = false
++                Log.i(TAG, "SuperCamera reader stopped")
++            }
++        }, "technostrazh-supercamera-reader")
++        superReaderThread = thread
++        thread.start()
++    }
++
++    private fun convertYuyvToRgbaAndArgb(
++        yuyv: ByteArray,
++        rgba: ByteArray,
++        pixels: IntArray,
++    ): Boolean {
++        if (yuyv.size < SUPER_FRAME_BYTES || rgba.size < SUPER_WIDTH * SUPER_HEIGHT * 4) return false
++        var src = 0
++        var dst = 0
++        var pixel = 0
++        while (src + 3 < SUPER_FRAME_BYTES) {
++            val y0 = yuyv[src].toInt() and 0xFF
++            val u = (yuyv[src + 1].toInt() and 0xFF) - 128
++            val y1 = yuyv[src + 2].toInt() and 0xFF
++            val v = (yuyv[src + 3].toInt() and 0xFF) - 128
++            writeConvertedPixel(y0, u, v, rgba, dst, pixels, pixel)
++            writeConvertedPixel(y1, u, v, rgba, dst + 4, pixels, pixel + 1)
++            src += 4
++            dst += 8
++            pixel += 2
++        }
++        return pixel == SUPER_WIDTH * SUPER_HEIGHT
++    }
++
++    private fun writeConvertedPixel(
++        y: Int,
++        u: Int,
++        v: Int,
++        rgba: ByteArray,
++        offset: Int,
++        pixels: IntArray,
++        pixelIndex: Int,
++    ) {
++        val r = (y + ((359 * v) shr 8)).coerceIn(0, 255)
++        val g = (y - (((88 * u) + (183 * v)) shr 8)).coerceIn(0, 255)
++        val b = (y + ((454 * u) shr 8)).coerceIn(0, 255)
++        rgba[offset] = r.toByte()
++        rgba[offset + 1] = g.toByte()
++        rgba[offset + 2] = b.toByte()
++        rgba[offset + 3] = 0xFF.toByte()
++        pixels[pixelIndex] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
++    }
++
++    private fun drawSuperPreview(pixels: IntArray) {
++        val surface = superSurface ?: return
++        val bitmap = Bitmap.createBitmap(SUPER_WIDTH, SUPER_HEIGHT, Bitmap.Config.ARGB_8888)
++        try {
++            bitmap.setPixels(pixels, 0, SUPER_WIDTH, 0, 0, SUPER_WIDTH, SUPER_HEIGHT)
++            var canvas: Canvas? = null
++            try {
++                canvas = surface.lockCanvas(null)
++                val target = Rect(0, 0, canvas.width, canvas.height)
++                canvas.drawBitmap(bitmap, null, target, SUPER_PAINT)
++            } finally {
++                if (canvas != null) runCatching { surface.unlockCanvasAndPost(canvas) }
++            }
++        } catch (error: Throwable) {
++            Log.w(TAG, "SuperCamera preview draw failed", error)
++        } finally {
++            bitmap.recycle()
++        }
++    }
++
++    private fun maybePostSuperDiagnostics(lastRead: Int) {
++        val now = System.nanoTime()
++        if (now - superLastDiagNs < 1_000_000_000L) return
++        val elapsed = ((now - superLastDiagNs).coerceAtLeast(1L)).toDouble() / 1_000_000_000.0
++        val bytesDelta = superBytesRead - superLastDiagBytes
++        val bps = (bytesDelta / elapsed).toLong()
++        superLastDiagNs = now
++        superLastDiagBytes = superBytesRead
++        Log.i(
++            TAG,
++            "SuperCamera diag read=$lastRead reads=$superReadCount bytes=$superBytesRead bps=$bps " +
++                "frames=$superFullFrameCount hdr511=$superHeader511Count short=$superShortReadCount " +
++                "convertFail=$superConvertFailCount first=$superFirstFrameDelivered",
++        )
++        if (!superFirstFrameDelivered) {
++            postStatus(
++                "Mobile USB ждёт кадр: reads=$superReadCount, ${bps / 1024} KiB/s, " +
++                    "full=$superFullFrameCount, hdr511=$superHeader511Count, short=$superShortReadCount, last=$lastRead",
++            )
++        }
++    }
++
++    private fun resetSuperDiagnostics() {
++        superReadCount = 0L
++        superBytesRead = 0L
++        superHeader511Count = 0L
++        superFullFrameCount = 0L
++        superShortReadCount = 0L
++        superConvertFailCount = 0L
++        superLastDiagNs = System.nanoTime()
++        superLastDiagBytes = 0L
++    }
++
++    private fun stopSuperCamera() {
++        superStopRequested.set(true)
++        val thread = superReaderThread
++        if (thread != null && thread !== Thread.currentThread()) {
++            runCatching { thread.join(SUPER_STOP_JOIN_MS) }
++            if (thread.isAlive) {
++                Log.w(TAG, "SuperCamera reader did not stop within ${SUPER_STOP_JOIN_MS} ms")
++                runCatching { thread.interrupt() }
++                runCatching { thread.join(500L) }
++            }
++        }
++        superReaderThread = null
++        superReaderRunning = false
++        val intf = superInterface
++        val ctrl = superCtrlBlock
++        if (intf != null && ctrl != null) runCatching { ctrl.releaseInterface(intf) }
++        superInterface = null
++        superVideoIn = null
++        superConnection = null
++        superCtrlBlock = null
++        superFirstFrameDelivered = false
++        runCatching { superSurface?.release() }
++        superSurface = null
++        surfaceTexture?.let { texture ->
++            if (UsbEndoscopeSupport.isSuperCamera(currentDevice)) {
++                superSurface = runCatching { Surface(texture) }.getOrNull()
++            }
++        }
++    }
++
+     /** Keep every advertised format and its real frame rates for automatic fallback. */
+     private fun buildResolutionVariants(supported: String): List<UvcResolution> {
+         val yuyv = UVCCamera.getSupportedSize(4, supported)
+@@ -404,6 +772,18 @@
+ 
+     companion object {
+         private const val TAG = "TechnostrazhUVC"
++        private const val SUPER_WIDTH = 640
++        private const val SUPER_HEIGHT = 480
++        private const val SUPER_FRAME_BYTES = SUPER_WIDTH * SUPER_HEIGHT * 2
++        private const val SUPER_STATUS_BYTES = 511
++        private const val SUPER_INFO_LENGTH = 512
++        private const val SUPER_CONTROL_TIMEOUT_MS = 1500
++        private const val SUPER_READ_TIMEOUT_MS = 2500
++        private const val SUPER_STOP_JOIN_MS = 3500L
++        private const val SUPER_START_RETRIES = 3
++        private const val SUPER_CLASS_DEVICE_IN = 0xA0
++        private const val SUPER_CLASS_DEVICE_OUT = 0x20
++        private val SUPER_PAINT = Paint(Paint.FILTER_BITMAP_FLAG)
+     }
+ 
+     private fun postStatus(message: String) {
