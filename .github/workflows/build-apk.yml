@@ -46,12 +46,15 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          TARGET="$(find project -type f -name UvcCameraController.kt -print -quit)"
+          test -n "$TARGET"
+          echo "Patching $TARGET"
           cp v42_controller.patch v42_controller_work.patch
           sed -i 's/@@ -301,6 +348,327 @@/@@ -301,6 +348,316 @@/' v42_controller_work.patch
-          (cd project && patch -p1 < ../v42_controller_work.patch)
+          patch "$TARGET" < v42_controller_work.patch
           sed -i -E 's/versionCode = [0-9]+/versionCode = 42/' project/app/build.gradle.kts
           grep -n 'versionCode\|versionName' project/app/build.gradle.kts
-          grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
+          grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' "$TARGET"
 
       - name: Apply dependency compatibility fix
         shell: bash
