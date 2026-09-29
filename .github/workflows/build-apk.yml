@@ -1,14 +1,11 @@
-name: Build defect detector APK
+name: Build Technostrazh AI v42
 
 on:
   workflow_dispatch:
   push:
     paths:
       - '.github/workflows/build-apk.yml'
-      - 'ci_tgz/**'
-      - 'v42_controller.patch'
-  pull_request:
-    branches: [ main ]
+      - 'v42_min/**'
 
 jobs:
   build:
@@ -19,48 +16,67 @@ jobs:
         with:
           show-progress: false
 
-      - name: Restore Android project
+      - name: Restore exact v42 source
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p project
-          cat ci_tgz/tgz_*.txt > project.b64
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('project.b64')
-          chars = list(path.read_text())
-          repairs = {13952: 'i', 16176: 'i', 16599: 'i', 21231: 'U'}
-          for index, value in repairs.items():
-              chars[index] = value
-          path.write_text(''.join(chars))
-          PY
-          test "$(sha256sum project.b64 | awk '{print $1}')" = "9993d22053c36b8d98809e1b89766bccbc9d309a88842cbf82813cbafd77b575"
-          base64 --decode project.b64 > project.tar.gz
-          test "$(sha256sum project.tar.gz | awk '{print $1}')" = "ddd425eecef50e043344dc8bb4d1ade3b5607cf653875237db16a61423534a37"
-          gzip -t project.tar.gz
-          tar -xzf project.tar.gz -C project
+          cat v42_min/min_*.txt > v42.b64
+          test "$(wc -c < v42.b64)" = "68856"
+          test "$(sha256sum v42.b64 | awk '{print $1}')" = "2d06b2dc0e73dd1e629b24df2c6305d5b256dc3a281b0d46787dfa5685add26e"
+          base64 --decode v42.b64 > v42.tar.xz
+          test "$(sha256sum v42.tar.xz | awk '{print $1}')" = "ab980a9e1bb67cb3d5718e7f666c015cd2494b2f94ccec9137ea963ba4e24142"
+          xz -t v42.tar.xz
+          mkdir project
+          tar -xJf v42.tar.xz -C project
           test -f project/settings.gradle.kts
-          rm -f project.tar.gz project.b64
+          test -f project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
+          grep -n 'versionCode = 42' project/app/build.gradle.kts
+          grep -n 'versionName = "1.6.0"' project/app/build.gradle.kts
+          grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
 
-      - name: Apply v42 Mobile SuperCamera source patch
+      - name: Restore exact UVC camera AAR
         shell: bash
         run: |
           set -euxo pipefail
-          TARGET="$(find project -type f -name UvcCameraController.kt -print -quit)"
-          test -n "$TARGET"
-          echo "Patching $TARGET"
-          cp v42_controller.patch v42_controller_work.patch
-          sed -i 's/@@ -301,6 +348,327 @@/@@ -301,6 +348,316 @@/' v42_controller_work.patch
-          patch "$TARGET" < v42_controller_work.patch
-          sed -i -E 's/versionCode = [0-9]+/versionCode = 42/' project/app/build.gradle.kts
-          grep -n 'versionCode\|versionName' project/app/build.gradle.kts
-          grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' "$TARGET"
+          mkdir -p project/app/libs
+          curl -fL --retry 3 --retry-delay 2 \
+            https://repo.maven.apache.org/maven2/org/uvccamera/lib/0.0.13/lib-0.0.13.aar \
+            -o project/app/libs/uvccamera-0.0.13.aar
+          sha256sum project/app/libs/uvccamera-0.0.13.aar
+          test "$(sha256sum project/app/libs/uvccamera-0.0.13.aar | awk '{print $1}')" = "d60fbcda1ce7388267c685b1de6eae2367df88e7f88cb960395f06bfa9ed29df"
 
-      - name: Apply dependency compatibility fix
+      - name: Create build-only binary placeholders
         shell: bash
         run: |
-          sed -i 's/com.google.ai.edge.litert:litert:2.1.6/com.google.ai.edge.litert:litert:1.4.2/g' project/app/build.gradle.kts
-          grep -n 'litert' project/app/build.gradle.kts
+          set -euxo pipefail
+          mkdir -p project/app/src/main/assets/models project/app/src/main/res/raw project/app/src/main/res/drawable project/app/src/main/res/drawable-nodpi
+          printf 'PLACEHOLDER_MODEL_320' > project/app/src/main/assets/models/best_320.tflite
+          printf 'PLACEHOLDER_MODEL_416' > project/app/src/main/assets/models/best_416.tflite
+          printf 'PLACEHOLDER_MODEL_640' > project/app/src/main/assets/models/best_640.tflite
+          python3 - <<'PY'
+          import base64, math, struct, wave
+          from pathlib import Path
+          png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=')
+          drawable = Path('project/app/src/main/res/drawable')
+          for name in ['about_wheelset','home_workshop_bg','home_workshop_bg_v2','home_workshop_bg_v3','home_workshop_bright_164','home_workshop_user_exact_163']:
+              (drawable / f'{name}.png').write_bytes(png)
+          Path('project/app/src/main/res/drawable-nodpi/ic_launcher_foreground_image.png').write_bytes(png)
+          root = Path('project/app/src/main/res/raw')
+          def tone(name, pattern):
+              rate = 22050
+              samples=[]
+              for freq,dur,amp in pattern:
+                  n=int(rate*dur)
+                  for i in range(n):
+                      v=0 if freq==0 else int(32767*amp*math.sin(2*math.pi*freq*i/rate))
+                      samples.append(v)
+              with wave.open(str(root/name),'wb') as w:
+                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+                  w.writeframes(b''.join(struct.pack('<h',x) for x in samples))
+          tone('short_beep.wav', [(880,.14,.45)])
+          tone('double_alarm.wav', [(1050,.13,.55),(0,.08,0),(1050,.13,.55)])
+          tone('sharp_alarm.wav', [(1350,.18,.65),(0,.06,0),(1350,.18,.65)])
+          PY
 
       - uses: actions/setup-java@v4
         with:
@@ -79,66 +95,48 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Create build-only placeholder assets
-        shell: bash
-        run: |
-          mkdir -p project/app/src/main/assets/models project/app/src/main/res/raw
-          printf 'PLACEHOLDER_MODEL_320' > project/app/src/main/assets/models/best_320.tflite
-          printf 'PLACEHOLDER_MODEL_416' > project/app/src/main/assets/models/best_416.tflite
-          printf 'PLACEHOLDER_MODEL_640' > project/app/src/main/assets/models/best_640.tflite
-          python3 - <<'PY'
-          import math, struct, wave
-          from pathlib import Path
-          root = Path('project/app/src/main/res/raw')
-          root.mkdir(parents=True, exist_ok=True)
-          def tone(name, pattern):
-              rate = 22050
-              samples=[]
-              for freq,dur,amp in pattern:
-                  n=int(rate*dur)
-                  for i in range(n):
-                      v=0 if freq==0 else int(32767*amp*math.sin(2*math.pi*freq*i/rate))
-                      samples.append(v)
-              with wave.open(str(root/name),'wb') as w:
-                  w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-                  w.writeframes(b''.join(struct.pack('<h',x) for x in samples))
-          tone('short_beep.wav', [(880,.14,.45)])
-          tone('double_alarm.wav', [(1050,.13,.55),(0,.08,0),(1050,.13,.55)])
-          tone('sharp_alarm.wav', [(1350,.18,.65),(0,.06,0),(1350,.18,.65)])
-          PY
-
-      - name: Build debug APK
+      - name: Build debug shell APK
         working-directory: project
         shell: bash
         run: |
           set -o pipefail
           gradle --no-daemon clean assembleDebug --stacktrace 2>&1 | tee ../gradle-build.log
 
+      - name: Collect Android tools
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p signing-tools
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt" signing-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/aapt2" signing-tools/
+          if [ -x "$ANDROID_HOME/build-tools/35.0.0/dexdump" ]; then cp "$ANDROID_HOME/build-tools/35.0.0/dexdump" signing-tools/; fi
+          LIBCPP="$(find "$ANDROID_HOME/build-tools/35.0.0" -name 'libc++.so*' | head -n 1)"
+          test -n "$LIBCPP"
+          cp "$LIBCPP" signing-tools/libc++.so
+          chmod +x signing-tools/zipalign signing-tools/aapt signing-tools/aapt2 signing-tools/dexdump 2>/dev/null || true
+
       - name: Upload Gradle build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gradle-build-log
+          name: v42-gradle-build-log
           if-no-files-found: error
           path: gradle-build.log
 
-      - name: Collect signing tools
-        shell: bash
-        run: |
-          mkdir -p signing-tools
-          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" signing-tools/
-          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" signing-tools/
-          LIBCPP="$(find "$ANDROID_HOME/build-tools/35.0.0" -name 'libc++.so*' | head -n 1)"
-          test -n "$LIBCPP"
-          cp "$LIBCPP" signing-tools/libc++.so
-          chmod +x signing-tools/zipalign
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload v42 shell and Android tools
+        if: success()
+        uses: actions/upload-artifact@v4
         with:
-          name: defect-detector-shell-and-signing-tools
+          name: technostrazh-v42-shell-and-tools
           if-no-files-found: error
           path: |
             project/app/build/outputs/apk/debug/app-debug.apk
             signing-tools/apksigner.jar
             signing-tools/zipalign
+            signing-tools/aapt
+            signing-tools/aapt2
+            signing-tools/dexdump
             signing-tools/libc++.so
