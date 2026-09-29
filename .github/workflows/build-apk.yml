@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build-apk.yml'
       - 'ci_tgz/**'
+      - 'v42_controller.patch'
   pull_request:
     branches: [ main ]
 
@@ -40,6 +41,17 @@ jobs:
           tar -xzf project.tar.gz -C project
           test -f project/settings.gradle.kts
           rm -f project.tar.gz project.b64
+
+      - name: Apply v42 Mobile SuperCamera source patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp v42_controller.patch v42_controller_work.patch
+          sed -i 's/@@ -301,6 +348,327 @@/@@ -301,6 +348,316 @@/' v42_controller_work.patch
+          (cd project && patch -p1 < ../v42_controller_work.patch)
+          sed -i -E 's/versionCode = [0-9]+/versionCode = 42/' project/app/build.gradle.kts
+          grep -n 'versionCode\|versionName' project/app/build.gradle.kts
+          grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
 
       - name: Apply dependency compatibility fix
         shell: bash
