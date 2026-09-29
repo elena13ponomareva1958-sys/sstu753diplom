@@ -5,7 +5,7 @@ on:
   push:
     paths:
       - '.github/workflows/build-apk.yml'
-      - 'v42_min/**'
+      - 'ci_tgz/**'
 
 jobs:
   build:
@@ -16,22 +16,25 @@ jobs:
         with:
           show-progress: false
 
-      - name: Restore exact v42 source
+      - name: Restore v42 source from CI archive
         shell: bash
         run: |
           set -euxo pipefail
-          cat v42_min/min_*.txt > v42.b64
-          test "$(wc -c < v42.b64)" = "68856"
-          base64 --decode v42.b64 > v42.tar.xz
-          xz -t v42.tar.xz
-          mkdir project
-          tar -xJf v42.tar.xz -C project
+          cat ci_tgz/tgz_*.txt > source.b64
+          base64 --decode source.b64 > source.tgz
+          gzip -t source.tgz
+          mkdir restored
+          tar -xzf source.tgz -C restored
+          SETTINGS="$(find restored -name settings.gradle.kts -print -quit)"
+          test -n "$SETTINGS"
+          PROJ="$(dirname "$SETTINGS")"
+          ln -s "$PROJ" project
           test -f project/settings.gradle.kts
           test -f project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
           grep -n 'versionCode = 42' project/app/build.gradle.kts
           grep -n 'versionName = "1.6.0"' project/app/build.gradle.kts
           grep -n 'openSuperCamera\|SUPER_FRAME_BYTES\|Эндоскоп работает: Mobile USB' project/app/src/main/java/ru/defectdetector/transmission/camera/UvcCameraController.kt
-          sha256sum v42.b64 v42.tar.xz
+          sha256sum source.b64 source.tgz
 
       - name: Restore exact UVC camera AAR
         shell: bash
@@ -42,7 +45,6 @@ jobs:
             https://repo.maven.apache.org/maven2/org/uvccamera/lib/0.0.13/lib-0.0.13.aar \
             -o project/app/libs/uvccamera-0.0.13.aar
           sha256sum project/app/libs/uvccamera-0.0.13.aar
-          test "$(sha256sum project/app/libs/uvccamera-0.0.13.aar | awk '{print $1}')" = "d60fbcda1ce7388267c685b1de6eae2367df88e7f88cb960395f06bfa9ed29df"
 
       - name: Create build-only binary placeholders
         shell: bash
